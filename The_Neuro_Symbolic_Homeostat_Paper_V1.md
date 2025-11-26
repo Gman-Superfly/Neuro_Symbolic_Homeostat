@@ -19,7 +19,7 @@ Modern “System‑1” models are fast but brittle under hard constraints; symb
 - explores safely without violating invariants, and
 - evolves structure as uncertainty changes.
 
-Our core design principle is entity‑first, physics‑grounded coordination: modules expose order parameters and energies; the coordinator relaxes the global free energy with null‑space exploration, stability guards, and non‑local corrections.
+Our core design principle is modular‑first, physics‑grounded coordination: modules expose order parameters and energies; the coordinator relaxes the global free energy with null‑space exploration, stability guards, and non‑local corrections.
 
 ---
 
@@ -95,7 +95,7 @@ Scope and realization. We scope GaBP claims strictly to SPD/quadratic blocks and
 
 ## 4. Architecture & Mechanisms
 
-### 4.1 Entities, Energies, and Precision
+### 4.1 Modules, Energies, and Precision
 Modules expose order parameters and implement local energies. Couplings encode interactions (springs, hinges, wormholes). A `SupportsPrecision` interface elevates curvature (precision) to a first‑class signal. The coordinator aggregates a diagonal precision vector $\Lambda$ from module curvature and coupling curvature (quadratic and active hinges) and, when enabled (`use_stiffness_updates`), applies per‑coordinate updates $\Delta \eta_i = -(\partial F/\partial \eta_i)/(\Lambda_{ii}+\varepsilon)$. This same $\Lambda$ modulates PSON to emphasize exploration along flat directions. Vectorized graph caches avoid Python overhead.
 
 ### 4.2 Stability Projector (Small‑Gain Allocator)
