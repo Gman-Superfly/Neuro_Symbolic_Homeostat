@@ -49,12 +49,14 @@ Thus, monotone descent is preserved under a down‑only acceptance rule or for s
 
 ### 2.3 Wormhole Effect (Non‑Local Gradient Teleportation)
 Closed gates receive forces proportional to downstream potential benefit. With gate–benefit energy
+
 $$
 F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}},
 $$
 
 (Eq. 3)
 the gradient w.r.t. the gate is independent of the current gate value:
+
 $$
 \frac{\partial F}{\partial \eta_{\text{gate}}} = -w\, \Delta_{\text{benefit}}.
 $$
@@ -72,6 +74,7 @@ We keep the iteration contractive with a Small‑Gain projector: Gershgorin row/
 ## 3. Message Passing ↔ Gradient Descent: When Are They the Same?
 
 Consider quadratic energy
+
 $$
 \displaystyle F(x) = \tfrac{1}{2} x^\top J x - h^\top x
 $$
@@ -97,17 +100,21 @@ Modules expose order parameters and implement local energies. Couplings encode i
 The Small‑Gain allocator enforces contraction by budgeting Gershgorin‑estimated Lipschitz margins. In strictly Gaussian sub‑problems it acts as a stability projector/monitor (down‑only scaling to keep $\rho(J) < 1$); in mixed regimes (gates/hinges) it remains a conservative allocator. Observability records global and per‑row margins and spend, aligning control‑theory guarantees with practical tuning.
 
 Algorithm (per‑row projector with explicit bound). Let $A$ denote the linear iteration Jacobian or a local Lipschitz surrogate. For each row $i$, define the Gershgorin margin
+
 $$
 m_i \;=\; a_{ii} \;-\; \sum_{j\neq i} |a_{ij}|.
 $$
 
 (Eq. 5)
+
 To enforce $m_i \ge \varepsilon > 0$, scale the off‑diagonals by
+
 $$
 s_i \;=\; \min\!\Big(1,\; \frac{a_{ii} - \varepsilon}{\sum_{j\neq i} |a_{ij}| + 10^{-12}}\Big).
 $$
 
 (Eq. 6)
+
 Update $a_{ij} \leftarrow s_i\, a_{ij}$ for $j\neq i$ while keeping $a_{ii}$ fixed. Report global margin $\min_i m_i$ and per‑row spend $1-s_i$.
 
 Guarantee (linear/SPD case). If $A$ is SPD and (Eq. 6) holds for all rows with \(\varepsilon>0\) (oops, missed one), then all Gershgorin discs lie strictly in the right half‑plane and the induced iteration matrix has spectral radius $< 1$ under standard Jacobi/GS splittings; thus the iteration is contractive. In mixed regimes, the projector remains a conservative guard.
