@@ -34,9 +34,10 @@ Our core design principle is entity‑first, physics‑grounded coordination: mo
 ### 2.2 Precision‑Scaled Orthogonal Noise (PSON)
 Standard Langevin noise breaks monotonicity. We inject noise in the tangent plane orthogonal to the gradient and scale it by inverse precision (local curvature):
 
-$
+$$
 \xi_{\mathrm{injection}} \propto \Lambda^{-1}\,\mathrm{proj}_{\nabla \mathcal{F}^\perp}\big(\mathcal{N}(0, I)\big)
-$
+$$
+
 (Eq. 2)
 
 PSON explores flat directions (null‑space) without fighting descent, providing robust exploration and smoothing (dithering) that suppresses high‑frequency potholes while tracking deep valleys.
@@ -51,11 +52,13 @@ Closed gates receive forces proportional to downstream potential benefit. With g
 $$
 F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}},
 $$
+
 (Eq. 3)
 the gradient w.r.t. the gate is independent of the current gate value:
 $$
 \frac{\partial F}{\partial \eta_{\text{gate}}} = -w\, \Delta_{\text{benefit}}.
 $$
+
 (Eq. 4)
 This provides a non‑local correction akin to the “nudge” in Equilibrium Propagation—enabling credit assignment without backprop through inactive paths.
 
@@ -72,6 +75,7 @@ Consider quadratic energy
 $$
 \displaystyle F(x) = \tfrac{1}{2} x^\top J x - h^\top x
 $$
+
 (Eq. 1)
 with SPD precision matrix $J$. We denote $D = \mathrm{diag}(J)$ and write $J = D + L + U$ with $L$ strictly lower‑ and $U$ strictly upper‑triangular parts. Solving $Jx = h$ via iterative methods yields the following equivalences:
 
@@ -96,11 +100,13 @@ Algorithm (per‑row projector with explicit bound). Let $A$ denote the linear i
 $$
 m_i \;=\; a_{ii} \;-\; \sum_{j\neq i} |a_{ij}|.
 $$
+
 (Eq. 5)
 To enforce $m_i \ge \varepsilon > 0$, scale the off‑diagonals by
 $$
 s_i \;=\; \min\!\Big(1,\; \frac{a_{ii} - \varepsilon}{\sum_{j\neq i} |a_{ij}| + 10^{-12}}\Big).
 $$
+
 (Eq. 6)
 Update $a_{ij} \leftarrow s_i\, a_{ij}$ for $j\neq i$ while keeping $a_{ii}$ fixed. Report global margin $\min_i m_i$ and per‑row spend $1-s_i$.
 
