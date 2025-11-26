@@ -202,7 +202,9 @@ By unifying precision‑aware null‑space exploration (PSON), stability project
 
 ### References
 
-Needs full FURLAT ABSTRACTIONS links, thanks etc.
+Great thanks for inspiration and interesting techniques in distributed computation to Furlat and his wonderful repo Abstractions: https://github.com/furlat/Abstractions
+
+Theory Refs:
 
 1. Weiss, Y., & Freeman, W. T. (2001). Correctness of Belief Propagation in Gaussian Graphical Models of Arbitrary Topology. Neural Computation.  
 2. Malioutov, D., Johnson, J. K., & Willsky, A. S. (2006). Walk‑sums and belief propagation in Gaussian graphical models. Journal of Machine Learning Research.  
