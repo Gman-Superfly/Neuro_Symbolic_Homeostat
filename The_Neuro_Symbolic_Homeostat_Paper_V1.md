@@ -34,9 +34,9 @@ Our core design principle is entity‑first, physics‑grounded coordination: mo
 ### 2.2 Precision‑Scaled Orthogonal Noise (PSON)
 Standard Langevin noise breaks monotonicity. We inject noise in the tangent plane orthogonal to the gradient and scale it by inverse precision (local curvature):
 
-$$
+$
 \xi_{\mathrm{injection}} \propto \Lambda^{-1}\,\mathrm{proj}_{\nabla \mathcal{F}^\perp}\big(\mathcal{N}(0, I)\big)
-$$
+$
 (Eq. 2)
 
 PSON explores flat directions (null‑space) without fighting descent, providing robust exploration and smoothing (dithering) that suppresses high‑frequency potholes while tracking deep valleys.
