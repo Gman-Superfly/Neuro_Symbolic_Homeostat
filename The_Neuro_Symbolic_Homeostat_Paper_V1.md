@@ -35,7 +35,10 @@ Our core design principle is entity‑first, physics‑grounded coordination: mo
 ### 2.2 Precision‑Scaled Orthogonal Noise (PSON)
 Standard Langevin noise breaks monotonicity. We inject noise in the tangent plane orthogonal to the gradient and scale it by inverse precision (local curvature):
 
-\[ \xi_{\mathrm{injection}} \propto \Lambda^{-1}\,\mathrm{proj}_{\nabla \mathcal{F}^\perp}\big(\mathcal{N}(0, I)\big) \]  (Eq. 2)
+$$
+\xi_{\mathrm{injection}} \propto \Lambda^{-1}\,\mathrm{proj}_{\nabla \mathcal{F}^\perp}\big(\mathcal{N}(0, I)\big)
+$$
+(Eq. 2)
 
 PSON explores flat directions (null‑space) without fighting descent, providing robust exploration and smoothing (dithering) that suppresses high‑frequency potholes while tracking deep valleys.
 When a problem metric \(M\) is available, we use an \(M\)-orthogonal projection (replace “⊥” by “⊥_M”) and re‑project after precision weighting to preserve \(M\)‑orthogonality.
@@ -46,9 +49,15 @@ Thus, monotone descent is preserved under a down‑only acceptance rule or for s
 
 ### 2.3 Wormhole Effect (Non‑Local Gradient Teleportation)
 Closed gates receive forces proportional to downstream potential benefit. With gate–benefit energy
-\[ F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}}, \]  (Eq. 3)
+$$
+F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}},
+$$
+(Eq. 3)
 the gradient w.r.t. the gate is independent of the current gate value:
-\[ \frac{\partial F}{\partial \eta_{\text{gate}}} = -w\, \Delta_{\text{benefit}}. \]  (Eq. 4)
+$$
+\frac{\partial F}{\partial \eta_{\text{gate}}} = -w\, \Delta_{\text{benefit}}.
+$$
+(Eq. 4)
 This provides a non‑local correction akin to the “nudge” in Equilibrium Propagation—enabling credit assignment without backprop through inactive paths.
 
 Explicit sign check. From (Eq. 4), \(\mathrm{sign}\big(\partial F/\partial \eta_{\text{gate}}\big) = -\,\mathrm{sign}(\Delta_{\text{benefit}})\). Thus when downstream benefit is positive, the gradient pushes the gate upward (reducing energy), irrespective of the current \(\eta_{\text{gate}}\); conversely for negative benefit.
@@ -61,7 +70,10 @@ We keep the iteration contractive with a Small‑Gain projector: Gershgorin row/
 ## 3. Message Passing ↔ Gradient Descent: When Are They the Same?
 
 Consider quadratic energy
-\( \displaystyle F(x) = \tfrac{1}{2} x^\top J x - h^\top x \)  (Eq. 1)
+$$
+\displaystyle F(x) = \tfrac{1}{2} x^\top J x - h^\top x
+$$
+(Eq. 1)
 with SPD precision matrix \(J\). We denote \(D = \mathrm{diag}(J)\) and write \(J = D + L + U\) with \(L\) strictly lower‑ and \(U\) strictly upper‑triangular parts. Solving \(Jx = h\) via iterative methods yields the following equivalences:
 
 - GaBP (means) with a synchronous schedule matches Jacobi; with a sequential schedule matches Gauss–Seidel (GS).
@@ -82,9 +94,15 @@ Modules expose order parameters and implement local energies. Couplings encode i
 The Small‑Gain allocator enforces contraction by budgeting Gershgorin‑estimated Lipschitz margins. In strictly Gaussian sub‑problems it acts as a stability projector/monitor (down‑only scaling to keep \(\rho(J) < 1\)); in mixed regimes (gates/hinges) it remains a conservative allocator. Observability records global and per‑row margins and spend, aligning control‑theory guarantees with practical tuning.
 
 Algorithm (per‑row projector with explicit bound). Let \(A\) denote the linear iteration Jacobian or a local Lipschitz surrogate. For each row \(i\), define the Gershgorin margin
-\[ m_i \;=\; a_{ii} \;-\; \sum_{j\neq i} |a_{ij}|. \]  (Eq. 5)
+$$
+m_i \;=\; a_{ii} \;-\; \sum_{j\neq i} |a_{ij}|.
+$$
+(Eq. 5)
 To enforce \(m_i \ge \varepsilon > 0\), scale the off‑diagonals by
-\[ s_i \;=\; \min\!\Big(1,\; \frac{a_{ii} - \varepsilon}{\sum_{j\neq i} |a_{ij}| + 10^{-12}}\Big). \]  (Eq. 6)
+$$
+s_i \;=\; \min\!\Big(1,\; \frac{a_{ii} - \varepsilon}{\sum_{j\neq i} |a_{ij}| + 10^{-12}}\Big).
+$$
+(Eq. 6)
 Update \(a_{ij} \leftarrow s_i\, a_{ij}\) for \(j\neq i\) while keeping \(a_{ii}\) fixed. Report global margin \(\min_i m_i\) and per‑row spend \(1-s_i\).
 
 Guarantee (linear/SPD case). If \(A\) is SPD and (Eq. 6) holds for all rows with \(\varepsilon>0\), then all Gershgorin discs lie strictly in the right half‑plane and the induced iteration matrix has spectral radius \(< 1\) under standard Jacobi/GS splittings; thus the iteration is contractive. In mixed regimes, the projector remains a conservative guard.
