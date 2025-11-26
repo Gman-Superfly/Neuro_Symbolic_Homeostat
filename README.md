@@ -1,7 +1,7 @@
 # The Neuro-Symbolic Homeostat
 ### Logic as Physics. Inference as Relaxation.
 
-> **"A fast, modular 'System-2' layer that grounds the outputs of fast 'System-1' models in strict constraints using thermodynamically grounded self-regulation."**
+> **"A fast, modular 'System-2' layer that grounds the outputs of fast 'System-1' models in strict constraints using physics grounded self-regulation."**
 
 ---
 
@@ -60,7 +60,7 @@ Imagine a bedspring mattress. When you lie down, the springs adjust to support y
 We believe in documenting *why*, not just *how*.
 
 ### Theory & Mechanisms
-*   **[Thesis Draft](The_Neuro_Symbolic_Homeostat_Paper_V1.md)**: The canonical academic paper describing the full system.
+*   **[Thesis](The_Neuro_Symbolic_Homeostat_Paper_V1.md)**: The canonical academic paper describing the full system.
 *   **[Moving the Landscape](docs/README_MOVING_THE_LANDSCAPE.md)**: High-level overview of how our four pillars combine.
 *   **[Tangent Noise / PSON](docs/README_TANGENT_NOISE_PSON.md)**: Why standard noise fails and how we fix it.
 *   **[Stability Guarantees](docs/STABILITY_GUARANTEES.md)**: The control theory math (Small-Gain) that keeps us safe.

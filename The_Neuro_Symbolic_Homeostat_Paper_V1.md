@@ -1,7 +1,7 @@
 # Complexity from Constraints: The Neuro‑Symbolic Homeostat
 ## Fast Matrix–Message Relaxation with Precision‑Scaled Orthogonal Noise and Stability Projection
 
-**Authors:** Oscar Goldman (Gman‑Superfly), Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業  
+**Authors:** Oscar Goldman, Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業  
 **Date:** November 2025  
 **Status:** Draft with working code and demos
 
