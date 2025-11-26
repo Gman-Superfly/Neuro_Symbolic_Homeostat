@@ -38,7 +38,7 @@ $$
 \xi_{\mathrm{injection}} \propto \Lambda^{-1}\,\mathrm{proj}_{\nabla \mathcal{F}^\perp}\big(\mathcal{N}(0, I)\big)
 $$
 
-(Eq. 2)
+(Eq. 1)
 
 PSON explores flat directions (null‑space) without fighting descent, providing robust exploration and smoothing (dithering) that suppresses high‑frequency potholes while tracking deep valleys.
 When a problem metric $M$ is available, we use an $M$-orthogonal projection (replace “⊥” by “⊥_M”) and re‑project after precision weighting to preserve $M$‑orthogonality.
@@ -54,17 +54,17 @@ $$
 F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}},
 $$
 
-(Eq. 3)
+(Eq. 2)
 the gradient w.r.t. the gate is independent of the current gate value:
 
 $$
 \frac{\partial F}{\partial \eta_{\text{gate}}} = -w\, \Delta_{\text{benefit}}.
 $$
 
-(Eq. 4)
+(Eq. 3)
 This provides a non‑local correction akin to the “nudge” in Equilibrium Propagation—enabling credit assignment without backprop through inactive paths.
 
-Explicit sign check. From (Eq. 4), $\mathrm{sign}\big(\partial F/\partial \eta_{\text{gate}}\big) = -\,\mathrm{sign}(\Delta_{\text{benefit}})$. Thus when downstream benefit is positive, the gradient pushes the gate upward (reducing energy), irrespective of the current $\eta_{\text{gate}}$; conversely for negative benefit.
+Explicit sign check. From (Eq. 3), $\mathrm{sign}\big(\partial F/\partial \eta_{\text{gate}}\big) = -\,\mathrm{sign}(\Delta_{\text{benefit}})$. Thus when downstream benefit is positive, the gradient pushes the gate upward (reducing energy), irrespective of the current $\eta_{\text{gate}}$; conversely for negative benefit.
 
 ### 2.4 Stability and the GaBP Link
 We keep the iteration contractive with a Small‑Gain projector: Gershgorin row/global bounds cap couplings so the Jacobian spectral radius stays < 1. For strictly quadratic sub‑problems with SPD precision $J$, minimizing $F(x)=\tfrac{1}{2}x^\top J x - h^\top x$ is equivalent to solving $Jx = h$. In this regime the GaBP mean update with a synchronous (resp. sequential) schedule is algebraically equivalent to Jacobi (resp. Gauss–Seidel); our stiffness‑based step $x \leftarrow x - D^{-1}(Jx - h)$ (or its GS variant) realizes the same iteration without explicit message objects. Convergence holds under walk‑summability / $ \rho(I - D^{-1}J) < 1 $, which our Small‑Gain step cap enforces. See “GaBP ↔ Linear Solvers” in the repository documentation for the derivation and references.
@@ -79,8 +79,10 @@ $$
 \displaystyle F(x) = \tfrac{1}{2} x^\top J x - h^\top x
 $$
 
-(Eq. 1)
-with SPD precision matrix $J$. We denote $D = \mathrm{diag}(J)$ and write $J = D + L + U$ with $L$ strictly lower‑ and $U$ strictly upper‑triangular parts. Solving $Jx = h$ via iterative methods yields the following equivalences:
+(Eq. 4)
+with SPD precision matrix $J$. 
+
+We denote $D = \mathrm{diag}(J)$ and write $J = D + L + U$ with $L$ strictly lower‑ and $U$ strictly upper‑triangular parts. Solving $Jx = h$ via iterative methods yields the following equivalences:
 
 - GaBP (means) with a synchronous schedule matches Jacobi; with a sequential schedule matches Gauss–Seidel (GS).
 - Gradient descent with diagonal preconditioning ($\alpha = D^{-1}$) reproduces Jacobi; with triangular preconditioning ($(D+L)^{-1}$) reproduces GS.
@@ -117,7 +119,7 @@ $$
 
 Update $a_{ij} \leftarrow s_i\, a_{ij}$ for $j\neq i$ while keeping $a_{ii}$ fixed. Report global margin $\min_i m_i$ and per‑row spend $1-s_i$.
 
-Guarantee (linear/SPD case). If $A$ is SPD and (Eq. 6) holds for all rows with \(\varepsilon>0\) (oops, missed one), then all Gershgorin discs lie strictly in the right half‑plane and the induced iteration matrix has spectral radius $< 1$ under standard Jacobi/GS splittings; thus the iteration is contractive. In mixed regimes, the projector remains a conservative guard.
+Guarantee (linear/SPD case). If $A$ is SPD and (Eq. 6) holds for all rows with $\varepsilon>0$, then all Gershgorin discs lie strictly in the right half‑plane and the induced iteration matrix has spectral radius $< 1$ under standard Jacobi/GS splittings; thus the iteration is contractive. In mixed regimes, the projector remains a conservative guard.
 
 ### 4.3 Wormhole Couplings
 `GateBenefitCoupling` injects non‑local gradients even for closed connections, solving the zero‑gradient deadlock in sparse topologies. Damped variants provide smoother activation curves. This mechanism generalizes across planning, sequence, and gating tasks as the core “Redemption” pattern (future context corrects earlier decisions).
