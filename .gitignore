@@ -173,6 +173,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-complexconstraint migrate etc.md
-migration_plan.md
-mega_plan.md
+
+chats/

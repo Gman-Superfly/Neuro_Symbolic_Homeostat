@@ -10,55 +10,13 @@ import numpy as np
 from .interfaces import EnergyModule, EnergyCoupling, OrderParameter
 
 __all__ = [
-    "landau_free_energy",
-    "descend_free_energy",
     "total_energy",
     "project_noise_orthogonal",
     "project_noise_metric_orthogonal",
 ]
 
 
-def landau_free_energy(eta: np.ndarray | float, a: float, b: float) -> np.ndarray | float:
-    """Compute Landau free energy F(η) = a η^2 + b η^4.
-    
-    Args:
-        eta: Order parameter value(s).
-        a: Quadratic coefficient (controls phase; sign change at critical point).
-        b: Quartic coefficient (must be positive for stability).
-    Returns:
-        Free energy values with same shape as eta.
-    """
-    assert b > 0.0, "Quartic coefficient b must be positive for stability"
-    if isinstance(eta, (float, int)):
-        eta_f = float(eta)
-        return a * eta_f * eta_f + b * (eta_f ** 4)
-    eta_arr = np.asarray(eta, dtype=float)
-    return a * (eta_arr ** 2) + b * (eta_arr ** 4)
 
-
-def descend_free_energy(
-    eta0: float,
-    a: float,
-    b: float,
-    learning_rate: float = 0.05,
-    steps: int = 200,
-) -> Tuple[float, float]:
-    """Gradient descent on Landau free energy starting from eta0.
-    
-    Returns:
-        (eta_final, F_final)
-    """
-    assert isinstance(eta0, (float, int)), "eta0 must be scalar"
-    assert steps > 0, "steps must be positive"
-    assert 0.0 < learning_rate < 1.0, "learning_rate out of bounds"
-    assert b > 0.0, "b must be positive"
-    eta = float(eta0)
-    for _ in range(steps):
-        # dF/dη = 2 a η + 4 b η^3
-        dF_deta = 2.0 * a * eta + 4.0 * b * (eta ** 3)
-        eta -= learning_rate * dF_deta
-    F_final = float(landau_free_energy(eta, a, b))
-    return eta, F_final
 
 
 def total_energy(

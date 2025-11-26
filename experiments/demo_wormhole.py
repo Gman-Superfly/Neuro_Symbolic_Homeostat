@@ -46,6 +46,13 @@ def demo_wormhole_effect() -> None:
         constraints={},
         step_size=0.05,
         line_search=False,
+        stability_guard=True,
+        auto_step_from_lipschitz=True,
+        enable_orthogonal_noise=True,
+        auto_noise_controller=True,
+        precision_aware_noise_controller=True,
+        noise_magnitude=1e-2,
+        noise_schedule_decay=0.99,
     )
     
     # Start with gate CLOSED
@@ -92,6 +99,13 @@ def demo_wormhole_effect() -> None:
         constraints={"delta_benefit": potential_benefit},
         step_size=0.05,
         line_search=False,
+        stability_guard=True,
+        auto_step_from_lipschitz=True,
+        enable_orthogonal_noise=True,
+        auto_noise_controller=True,
+        precision_aware_noise_controller=True,
+        noise_magnitude=1e-2,
+        noise_schedule_decay=0.99,
     )
     
     # Start with SAME initial state: gate CLOSED

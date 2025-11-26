@@ -6,9 +6,6 @@
 **Status:** Draft with working code and demos
 
 
-##NOTE:
-no need to introduce a general bilinear off-diagonal coupling right now. I can wait until migrated tests from CFC are in place
----
 
 ### Abstract
 
@@ -38,48 +35,59 @@ Our core design principle is entity‑first, physics‑grounded coordination: mo
 ### 2.2 Precision‑Scaled Orthogonal Noise (PSON)
 Standard Langevin noise breaks monotonicity. We inject noise in the tangent plane orthogonal to the gradient and scale it by inverse precision (local curvature):
 
-\[ \xi_{\mathrm{injection}} \propto \Lambda^{-1}\,\mathrm{proj}_{\nabla \mathcal{F}^\perp}\big(\mathcal{N}(0, I)\big) \]
+\[ \xi_{\mathrm{injection}} \propto \Lambda^{-1}\,\mathrm{proj}_{\nabla \mathcal{F}^\perp}\big(\mathcal{N}(0, I)\big) \]  (Eq. 2)
 
-PSON explores flat directions (null‑space) without fighting descent, providing robust exploration and smoothing (dithering) that suppresses high‑frequency potholes while tracking deep valleys. PSON replaces the prior “Golden Spike” name for clarity.
+PSON explores flat directions (null‑space) without fighting descent, providing robust exploration and smoothing (dithering) that suppresses high‑frequency potholes while tracking deep valleys.
+When a problem metric \(M\) is available, we use an \(M\)-orthogonal projection (replace “⊥” by “⊥_M”) and re‑project after precision weighting to preserve \(M\)‑orthogonality.
+
+Proposition (Quadratic PSON safety). Let \(F(x) = \tfrac12 (x-x^\star)^\top H (x-x^\star)\) with \(H \succeq 0\) and gradient \(g = \nabla F(x) = H(x-x^\star)\). Let \(\delta\) be a noise vector projected orthogonal to \(g\) (Euclidean or metric‑orthogonal) and scaled by \(\Lambda^{-1}\). Then the first‑order change vanishes, \(g^\top \delta = 0\), and
+\( \Delta F \;=\; F(x+\beta\delta) - F(x) \;=\; \tfrac12 \beta^2 \delta^\top H \delta \;\ge\; 0. \)
+Thus, monotone descent is preserved under a down‑only acceptance rule or for sufficiently small \(\beta\) relative to curvature. Precision scaling (\(\Lambda^{-1}\)) biases \(\delta\) toward low‑curvature directions, reducing \(\delta^\top H \delta\).
 
 ### 2.3 Wormhole Effect (Non‑Local Gradient Teleportation)
 Closed gates receive forces proportional to downstream potential benefit. With gate–benefit energy
-\[ F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}}, \]
+\[ F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}}, \]  (Eq. 3)
 the gradient w.r.t. the gate is independent of the current gate value:
-\[ \frac{\partial F}{\partial \eta_{\text{gate}}} = -w\, \Delta_{\text{benefit}}. \]
+\[ \frac{\partial F}{\partial \eta_{\text{gate}}} = -w\, \Delta_{\text{benefit}}. \]  (Eq. 4)
 This provides a non‑local correction akin to the “nudge” in Equilibrium Propagation—enabling credit assignment without backprop through inactive paths.
 
+Explicit sign check. From (Eq. 4), \(\mathrm{sign}\big(\partial F/\partial \eta_{\text{gate}}\big) = -\,\mathrm{sign}(\Delta_{\text{benefit}})\). Thus when downstream benefit is positive, the gradient pushes the gate upward (reducing energy), irrespective of the current \(\eta_{\text{gate}}\); conversely for negative benefit.
+
 ### 2.4 Stability and the GaBP Link
-We keep the iteration contractive with a Small‑Gain projector: Gershgorin row/global bounds cap couplings so the Jacobian spectral radius stays < 1. For quadratic regimes, relaxation with precision tracking is equivalent to Gaussian Belief Propagation (GaBP)/Gauss–Seidel; precision acts as stiffness, producing Newton‑like scaling for fast convergence.
+We keep the iteration contractive with a Small‑Gain projector: Gershgorin row/global bounds cap couplings so the Jacobian spectral radius stays < 1. For strictly quadratic sub‑problems with SPD precision \(J\), minimizing \(F(x)=\tfrac{1}{2}x^\top J x - h^\top x\) is equivalent to solving \(Jx = h\). In this regime the GaBP mean update with a synchronous (resp. sequential) schedule is algebraically equivalent to Jacobi (resp. Gauss–Seidel); our stiffness‑based step \(x \leftarrow x - D^{-1}(Jx - h)\) (or its GS variant) realizes the same iteration without explicit message objects. Convergence holds under walk‑summability / \( \rho(I - D^{-1}J) < 1 \), which our Small‑Gain step cap enforces. See “GaBP ↔ Linear Solvers” in the repository documentation for the derivation and references.
 
 ---
 
 ## 3. Message Passing ↔ Gradient Descent: When Are They the Same?
 
-Consider quadratic energy \( f(x) = \tfrac{1}{2} x^\top J x - h^\top x \) with SPD precision matrix \(J\). Solving \(Jx = h\) via iterative methods yields the following equivalences:
+Consider quadratic energy
+\( \displaystyle F(x) = \tfrac{1}{2} x^\top J x - h^\top x \)  (Eq. 1)
+with SPD precision matrix \(J\). We denote \(D = \mathrm{diag}(J)\) and write \(J = D + L + U\) with \(L\) strictly lower‑ and \(U\) strictly upper‑triangular parts. Solving \(Jx = h\) via iterative methods yields the following equivalences:
 
 - GaBP (means) with a synchronous schedule matches Jacobi; with a sequential schedule matches Gauss–Seidel (GS).
 - Gradient descent with diagonal preconditioning (\(\alpha = D^{-1}\)) reproduces Jacobi; with triangular preconditioning (\((D+L)^{-1}\)) reproduces GS.
 
 Therefore, for Gaussian/quadratic sub‑problems under SPD and standard scheduling, “message passing” and “(preconditioned) gradient descent” are the same computation up to ordering. Convergence requires the spectral radius of the iteration matrix < 1; for GaBP this is “walk‑summability,” closely related to diagonal dominance. This dovetails with the Small‑Gain constraint (loop gains < 1).
 
-**Accuracy Note (paper‑safe phrasing):**
-
-> For quadratic energies with SPD precision \(J\), minimizing \(f(x)\) is equivalent to solving \(Jx=h\). In this setting, loopy Gaussian belief propagation (GaBP) for the means is algebraically equivalent to classical linear solvers: with a synchronous schedule it reduces to Jacobi; with a sequential schedule it reduces to Gauss–Seidel. Likewise, gradient descent with diagonal (resp. triangular) preconditioning reproduces Jacobi (resp. Gauss–Seidel). Under walk‑summability/spectral‑radius < 1 (i.e., loop gains < 1), all of these iterations converge to the unique minimizer.
-
-**Implementation Note (scope and realization):**
-
-We scope GaBP claims strictly to SPD/quadratic blocks and the standard scheduling equivalence (Jacobi/GS). Our implementation realizes the same linear iterations via gradient descent with diagonal/triangular preconditioning (and optional coordinate updates), not via explicit message objects. This preserves the algebraic equivalence and convergence conditions without introducing a separate message type.
+Scope and realization. We scope GaBP claims strictly to SPD/quadratic blocks and the standard scheduling equivalence (Jacobi/GS). Our implementation realizes the same linear iterations via per‑coordinate stiffness‑based updates: we divide the gradient by the diagonal curvature \(\Lambda_{ii}\) aggregated from module precision and coupling curvature (quadratic and active hinges), optionally with sequential (GS) scheduling. We do not introduce explicit message objects. This preserves the algebraic equivalence and convergence conditions while keeping the implementation vectorized and simple.
 
 ---
 
 ## 4. Architecture & Mechanisms
 
 ### 4.1 Entities, Energies, and Precision
-Modules expose order parameters and implement local energies. Couplings encode interactions (springs, hinges, wormholes). A `SupportsPrecision` interface elevates curvature (precision) to a first‑class signal that scales steps and modulates PSON. The coordinator caches diagonal precision and composes vectorized relaxations over the graph with compile‑time graph caching to avoid Python overhead.
+Modules expose order parameters and implement local energies. Couplings encode interactions (springs, hinges, wormholes). A `SupportsPrecision` interface elevates curvature (precision) to a first‑class signal. The coordinator aggregates a diagonal precision vector \(\Lambda\) from module curvature and coupling curvature (quadratic and active hinges) and, when enabled (`use_stiffness_updates`), applies per‑coordinate updates \(\Delta \eta_i = -(\partial F/\partial \eta_i)/(\Lambda_{ii}+\varepsilon)\). This same \(\Lambda\) modulates PSON to emphasize exploration along flat directions. Vectorized graph caches avoid Python overhead.
 
 ### 4.2 Stability Projector (Small‑Gain Allocator)
 The Small‑Gain allocator enforces contraction by budgeting Gershgorin‑estimated Lipschitz margins. In strictly Gaussian sub‑problems it acts as a stability projector/monitor (down‑only scaling to keep \(\rho(J) < 1\)); in mixed regimes (gates/hinges) it remains a conservative allocator. Observability records global and per‑row margins and spend, aligning control‑theory guarantees with practical tuning.
+
+Algorithm (per‑row projector with explicit bound). Let \(A\) denote the linear iteration Jacobian or a local Lipschitz surrogate. For each row \(i\), define the Gershgorin margin
+\[ m_i \;=\; a_{ii} \;-\; \sum_{j\neq i} |a_{ij}|. \]  (Eq. 5)
+To enforce \(m_i \ge \varepsilon > 0\), scale the off‑diagonals by
+\[ s_i \;=\; \min\!\Big(1,\; \frac{a_{ii} - \varepsilon}{\sum_{j\neq i} |a_{ij}| + 10^{-12}}\Big). \]  (Eq. 6)
+Update \(a_{ij} \leftarrow s_i\, a_{ij}\) for \(j\neq i\) while keeping \(a_{ii}\) fixed. Report global margin \(\min_i m_i\) and per‑row spend \(1-s_i\).
+
+Guarantee (linear/SPD case). If \(A\) is SPD and (Eq. 6) holds for all rows with \(\varepsilon>0\), then all Gershgorin discs lie strictly in the right half‑plane and the induced iteration matrix has spectral radius \(< 1\) under standard Jacobi/GS splittings; thus the iteration is contractive. In mixed regimes, the projector remains a conservative guard.
 
 ### 4.3 Wormhole Couplings
 `GateBenefitCoupling` injects non‑local gradients even for closed connections, solving the zero‑gradient deadlock in sparse topologies. Damped variants provide smoother activation curves. This mechanism generalizes across planning, sequence, and gating tasks as the core “Redemption” pattern (future context corrects earlier decisions).
@@ -91,15 +99,14 @@ Null‑space exploration without monotonicity violations. Precision‑aware scal
 
 ## 5. Algorithms (Composing Fast Matrix Math and Messages)
 
-We retain Dynamic Gradient‑Based Energy Minimization as the default inner solver and augment it with optional kernels per factor family:
+We retain Dynamic Gradient‑Based Energy Minimization as the default inner solver and augment it with optional kernels per factor family.
 
+**Penalty vs Primal–Dual (placement).** By default, the system operates as a penalty/augmented‑Lagrangian scheme (primal variables with adaptive penalty weights). When ADMM mode is enabled, the updates become true primal–dual iterations with explicit multipliers.
+
+Augmented kernels:
 - Quadratic/Gaussian blocks: GaBP‑style updates (Jacobi/GS schedule) = precision‑weighted linear solves with per‑iteration cost \(O(\mathrm{nnz}(J))\); no global factorization required.
 - Non‑Gaussian/gated/hinge terms: gradient with line search, proximal updates, or ADMM blocks (production‑ready) with acceptance guards.
 - Mixed graphs: hybrid passes—GaBP on quadratic stars, prox/gradient on others—under a common stability projector.
-
-**Penalty vs Primal–Dual Clarification:**
-
-> The system is a penalty/augmented‑Lagrangian–style scheme by default (primal variables with adaptive penalty weights). When ADMM mode is enabled, the updates become true primal–dual iterations with explicit multipliers.
 
 **Pseudocode Sketch (Conceptual):**
 
@@ -113,6 +120,8 @@ for block in factorization_order:
         x_block = prox_update(block)
     else:
         x_block = gradient_step(block, preconditioner=diag_precision)
+        # Or, per-coordinate stiffness update (force / stiffness):
+        # eta_i -= grad_i / (diag_precision_i + eps)
     apply_pson_tangent_noise(x_block)         # orthogonal, precision-scaled
     enforce_small_gain_stability_projection() # keep spectral radius < 1
 accept_if_monotone_or_guarded()
@@ -122,7 +131,7 @@ accept_if_monotone_or_guarded()
 
 ## 6. Observability
 
-We ship relaxation trackers and stability telemetry: per‑step ΔF, acceptance provenance, contraction margins (global and row), and “budget vs spend” for Small‑Gain. This enables black‑box‑free debugging of convergence and stability behavior.
+We ship relaxation trackers and stability telemetry: per‑step ΔF, acceptance provenance, contraction margins (global and row), precision‑diagonal stats (min/median/max), and “budget vs spend” for Small‑Gain. This enables black‑box‑free debugging of convergence and stability behavior.
 
 ---
 
@@ -132,6 +141,9 @@ We ship relaxation trackers and stability telemetry: per‑step ΔF, acceptance 
 - Precision‑aware vs uniform noise scaling: escape events, ΔF90, final energy.
 - Small‑Gain vs line‑search‑only vs GradNorm: ΔF90, backtracks, final energy on dense graphs.
 - Wormhole ablation: activation/opening rates vs energy drop versus hinge/quadratic baselines.
+
+**Table 1: Ablation Summary (Synthetic Quadratic & Mixed Tasks)**
+*(Placeholder: To be populated with ΔF90, acceptance rate, and final energy for Isotropic vs Orthogonal vs PSON modes across random SPD and sparse-gate topologies.)*
 
 Note on gaps (tracked): a dedicated script for “PSON vs isotropic vs precision‑orthogonal” ablation is planned; current code ships orthogonal and precision‑orthogonal modes (isotropic baseline to be added for in‑paper table).
 
@@ -150,6 +162,8 @@ uv run python -m experiments.benchmark_delta_f90 --configs default gradnorm smal
 # SmallGain validation sweep (see docs/SMALLGAIN_VALIDATION_FINAL.md)
 uv run python -m experiments.sweep_smallgain --quick
 ```
+
+Note: To enable stiffness‑based per‑coordinate updates in your own scripts, construct the coordinator with `use_stiffness_updates=True`; adapters (Small‑Gain, etc.) remain unchanged and continue to shape the effective stiffness through term weights.
 
 ---
 
@@ -176,11 +190,13 @@ uv run python -m experiments.sweep_smallgain --quick
 - Small‑gain/passivity (Zames; Vidyasagar): loop‑gain constraints for stability in nonlinear feedback systems.
 - Operator‑splitting/ADMM (Boyd et al.): proximal and primal‑dual updates for composite objectives.
 
+Walk‑summability vs diagonal dominance. Following Malioutov et al., walk‑summability ensures convergence of GaBP and can be related to diagonal dominance and spectral‑radius conditions for Jacobi/GS. Our Small‑Gain projector can be viewed as enforcing a diagonal‑dominance‑like margin (via Gershgorin bounds), aligning these views.
+
 ---
 
 ## 11. Conclusion
 
-By unifying precision‑aware null‑space exploration (PSON), stability projection (Small‑Gain), and non‑local correction (Wormhole), the Homeostat delivers a fast, controllable, and observable “System‑2” layer for neuro‑symbolic systems. In Gaussian regions, message passing and preconditioned gradient descent collapse to the same sparse matrix iteration, reducing tuning to stability budgeting; in mixed regimes, proximal and ADMM updates preserve efficiency and guarantees. The resulting architecture is both special and fast: matrix‑math heavy inner loops, explicit safety mechanisms, and non‑local credit assignment—all in a modular, typed stack.
+By unifying precision‑aware null‑space exploration (PSON), stability projection (Small‑Gain), non‑local correction (Wormhole), and stiffness‑based per‑coordinate updates, the Homeostat delivers a fast, controllable, and observable “System‑2” layer for neuro‑symbolic systems. In Gaussian regions, message passing and precision‑scaled iterations (Jacobi/GS) collapse to the same sparse matrix update, reducing tuning to stability budgeting; in mixed regimes, proximal and ADMM updates preserve efficiency and guarantees. The resulting architecture is both special and fast: matrix‑math heavy inner loops, explicit stability mechanisms, and non‑local credit assignment—all in a modular, typed stack.
 
 ---
 
@@ -219,4 +235,4 @@ If you use this repository in your research, please cite it as below.
 - Codebase: Python, protocol‑based architecture; hot‑swappable NumPy/Torch/JAX backends.  
 - Vectorization: Compile‑time graph vectorization cache to amortize sparse passes.  
 - Observability: Event‑driven telemetry (RelaxationTracker) for energy descent, stability margins, and adapter spend.  
-- Precision Layer: Implemented; per‑coordinate steps and noise scaling via diagonal curvature.
+- Precision Layer: Implemented; diagonal curvature aggregates module and coupling curvature; supports per‑coordinate stiffness‑based steps (`use_stiffness_updates`) and precision‑scaled PSON.
