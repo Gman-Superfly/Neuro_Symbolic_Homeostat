@@ -4,7 +4,7 @@
 **Authors:** Oscar Goldman, Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業  
 **Date:** November 2025  
 **Status:** Draft with working code and demos
-
+[![CC BY 4.0][cc-by-shield]][cc-by]
 
 ### Abstract
 
@@ -261,6 +261,19 @@ If you use this repository in your research, please cite it as below.
   note         = {Fast matrix–message relaxation with precision‑scaled orthogonal noise and stability projection}
 }
 ```
+
+---
+
+### License
+
+This paper is licensed under the [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) license.
+
+- **You are free to**: share (copy and redistribute) and adapt (remix, transform, build upon) for any purpose, even commercially.
+- **Under the following terms**: attribution — give appropriate credit, provide a link to the license, and indicate if changes were made. No additional restrictions may be applied.
+
+© 2025 Oscar Goldman — Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業.
+
+For the full legal text, see the [CC BY 4.0 legal code](https://creativecommons.org/licenses/by/4.0/legalcode).
 
 ---
 
