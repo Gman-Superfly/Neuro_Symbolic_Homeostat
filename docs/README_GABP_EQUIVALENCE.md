@@ -1,6 +1,6 @@
 # Equivalence: GaBP ↔ Linear Solvers (Jacobi/Gauss-Seidel)
 
-Status: Theoretical Foundation  
+Status: Theoretical Foundation
 Scope: Algebra and proofs linking Message Passing to Gradient Descent/Iterative Linear Solvers.
 
 ---

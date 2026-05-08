@@ -1,16 +1,16 @@
-# Stability Guarantees in Complexity from Constraints
+# Stability guarantees in complexity from constraints
 
 ## Overview
 
-This document explains the formal stability guarantees provided by the framework, how to enable them, and how to interpret the telemetry.
+This document explains the stability conditions used by this framework, how to enable them, and how to interpret telemetry.
 
-**Status**: PRODUCTION READY ✅ (Validated with 120 tests, SmallGain allocator proven)
+**Status**: validated on synthetic scenarios and local tests in this repository
 
 ---
 
-## Quick Start
+## Quick start
 
-### Enable Stability Guard
+### Enable stability guard
 
 ```python
 from core.coordinator import EnergyCoordinator
@@ -29,7 +29,7 @@ coord = EnergyCoordinator(
 etas = coord.relax_etas(etas0, steps=50)
 ```
 
-### Enable SmallGain Allocator (Recommended)
+### Enable SmallGain allocator (recommended)
 
 ```python
 from core.weight_adapters import SmallGainWeightAdapter
@@ -48,31 +48,31 @@ coord = EnergyCoordinator(
 
 ---
 
-## What Are Stability Guarantees?
+## What are stability guarantees?
 
-### The Problem
+### The problem
 
 In standard gradient descent, step sizes are chosen heuristically:
 - Too small → slow convergence
 - Too large → divergence (energy explodes)
 
-**We want**: Mathematical proof that energy will **never** increase.
+**Goal**: use conservative conditions that keep updates stable in supported regimes and add runtime guards elsewhere.
 
-### The Solution: Lyapunov Stability
+### The solution: Lyapunov-style stability checks
 
-We treat energy \( F(η) \) as a **Lyapunov function** and enforce:
+In linear and SPD settings we treat energy \( F(η) \) as a Lyapunov-style function and enforce:
 
 \[
 F(η^{k+1}) \leq F(η^k) \quad \forall k
 \]
 
-**How**: By capping the step size based on the Lipschitz constant of \( \nabla F \).
+**How**: by capping step size from a conservative estimate of the Lipschitz constant of \( \nabla F \).
 
 ---
 
-## Mathematical Foundation
+## Mathematical foundation
 
-### Lipschitz Constant
+### Lipschitz constant
 
 The gradient \( \nabla F(η) \) is **L-Lipschitz** if:
 
@@ -82,7 +82,7 @@ The gradient \( \nabla F(η) \) is **L-Lipschitz** if:
 
 **Physical Meaning**: L measures the "stiffest spring" in the system. High L = tight constraints.
 
-### Gradient Descent Convergence Theorem
+### Gradient descent convergence theorem
 
 If \( \nabla F \) is L-Lipschitz and we use step size \( \alpha < 2/L \), then:
 
@@ -92,9 +92,9 @@ F(η^{k+1}) \leq F(η^k) - \alpha (1 - \frac{\alpha L}{2}) \|\nabla F(η^k)\|^2
 
 **Proof of non-increase**: The term \( (1 - \alpha L/2) > 0 \) when \( \alpha < 2/L \).
 
-### Our Implementation
+### Our implementation
 
-We estimate L using a **Gershgorin-style bound** (conservative upper bound):
+We estimate L using a **Gershgorin-style bound**, a conservative upper bound:
 
 \[
 L \leq \sum_i |F_{i,local}''(η_i)| + \sum_{(i,j)} |F_{ij,coupling}''|
@@ -108,7 +108,7 @@ Then cap step size:
 
 (The 0.9 factor = `stability_cap_fraction` provides additional safety margin.)
 
-## Visual: Step Capping and Acceptance Flow
+## Visual: step capping and acceptance flow
 
 ```
 Compute L (Gershgorin) ────────────────┐
@@ -138,15 +138,15 @@ margin = (2/L) − α_used
 
 ---
 
-## SmallGain Theorem (Advanced)
+## SmallGain theorem (advanced)
 
-### The Problem with Coupled Systems
+### The problem with coupled systems
 
 In coupled systems, the Lipschitz bound \( L \) comes from **interactions** between terms. A naive global cap wastes the stability budget.
 
 **SmallGain Idea**: Allocate the budget per-edge based on "value per Lipschitz cost".
 
-### Formal Statement
+### Formal statement
 
 For a system with local terms \( F_i \) and couplings \( C_{ij} \), stability requires:
 
@@ -164,13 +164,13 @@ where:
 - \( \text{value}_{ij} = \) expected energy reduction from coupling \( (i,j) \)
 - \( \text{cost}_{ij} = \Delta L_{ij} \) (Lipschitz contribution)
 
-**Guarantee**: If the allocator spends ≤ ρ·budget (ρ < 1), the system remains contractive.
+**Scope-limited guarantee**: If the allocator spends ≤ ρ·budget (ρ < 1), linearized/SPD regimes remain contractive under these assumptions.
 
 ---
 
 ## Observability
 
-### Telemetry Fields
+### Telemetry fields
 
 When `log_contraction_margin=True`, `EnergyBudgetTracker` emits:
 
@@ -180,14 +180,14 @@ When `log_contraction_margin=True`, `EnergyBudgetTracker` emits:
 - `alloc:coup:<family>`: Per-family allocations (SmallGain only)
 - `cost:coup:<family>`: Per-family Lipschitz costs (SmallGain only)
 
-### Interpreting Contraction Margin
+### Interpreting contraction margin
 
 | Margin Value | Meaning | Action |
 |--------------|---------|--------|
-| > 0.01 | ✅ Healthy | No action needed |
-| 0.001 - 0.01 | ⚠️ Tight | Consider reducing coupling weights or step size |
-| < 0.001 | ❌ Risky | **Warning emitted** — reduce step size immediately |
-| Negative | 💥 Unstable | System may diverge — hard cap applied automatically |
+| > 0.01 |  Healthy | No action needed |
+| 0.001 - 0.01 |  Tight | Consider reducing coupling weights or step size |
+| < 0.001 |  Risky | **Warning emitted**, reduce step size immediately |
+| Negative |  Unstable | System may diverge, hard cap applied automatically |
 
 ### Visualization
 
@@ -201,9 +201,9 @@ uv run python -m experiments.plots.plot_gain_budget --input logs\energy_budget.c
 
 ---
 
-## Tuning for Stability
+## Tuning for stability
 
-### Reducing Lipschitz Constant
+### Reducing Lipschitz constant
 
 **Problem**: L is too large → step sizes become tiny → slow convergence
 
@@ -236,7 +236,7 @@ uv run python -m experiments.plots.plot_gain_budget --input logs\energy_budget.c
    mod = PolynomialEnergyModule(degree=3, basis="legendre")
    ```
 
-### Increasing Safety Margin
+### Increasing safety margin
 
 **Problem**: Margin too tight → frequent warnings
 
@@ -259,7 +259,7 @@ uv run python -m experiments.plots.plot_gain_budget --input logs\energy_budget.c
 
 ---
 
-## Comparison: Standard vs SmallGain Guard
+## Comparison: standard vs SmallGain guard
 
 | Feature | Standard `stability_guard` | SmallGain Allocator |
 |---------|---------------------------|---------------------|
@@ -268,17 +268,17 @@ uv run python -m experiments.plots.plot_gain_budget --input logs\energy_budget.c
 | **Overhead** | ~5% | ~100-200% (worth it for dense graphs) |
 | **Guarantees** | Contraction if α < 2/L | Contraction if budget spent ≤ ρ |
 | **Optimality** | Conservative (wastes budget) | Near-optimal (greedy allocation) |
-| **Use case** | Simple graphs, prototyping | Dense graphs, production systems |
+| **Use case** | Simple graphs, prototyping | Dense graphs and synthetic benchmarks |
 
-**Recommendation**: 
+**Recommendation**:
 - Use standard guard for quick experiments
-- Use SmallGain for production (40% faster convergence on dense graphs)
+- Use SmallGain for dense benchmark scenarios where its overhead is acceptable
 
 ---
 
-## Formal Guarantees
+## Formal guarantees
 
-### Theorem 1: Monotonic Energy Descent
+### Theorem 1: monotonic energy descent
 
 **Statement**: If `stability_guard=True` and step size \( \alpha = 0.9 \cdot (2/L) \), then:
 
@@ -294,7 +294,7 @@ F(η^{k+1}) \leq F(η^k) \quad \forall k
    \]
 3. Since \( \alpha < 2/L \), the term \( (1 - \alpha L/2) > 0 \), guaranteeing descent.
 
-### Theorem 2: SmallGain Contraction
+### Theorem 2: SmallGain contraction
 
 **Statement**: If SmallGain allocator spends ≤ ρ·budget with ρ < 1, the system remains contractive.
 
@@ -313,7 +313,7 @@ F(η^{k+1}) \leq F(η^k) \quad \forall k
 
 ### Warning: "Contraction margin below threshold"
 
-**Meaning**: The safety buffer is shrinking — system approaching instability
+**Meaning**: The safety buffer is shrinking, system approaching instability
 
 **Actions** (in order of preference):
 1. Reduce `step_size` by 50% (e.g., 0.05 → 0.025)
@@ -321,7 +321,7 @@ F(η^{k+1}) \leq F(η^k) \quad \forall k
 3. Use homotopy to ramp up couplings gradually
 4. Enable SmallGain allocator to optimize budget usage
 
-### Energy Increasing Despite Guard
+### Energy increasing despite guard
 
 **Possible Causes**:
 1. Numerical precision issues (use higher tolerance: `monotonic_energy_tol=1e-8`)
@@ -335,7 +335,7 @@ F(η^{k+1}) \leq F(η^k) \quad \forall k
 3. Run minimal test case
 4. Check logs for NaN or inf values
 
-### Step Size Becoming Tiny
+### Step size becoming tiny
 
 **Symptoms**: `contraction_margin` → 0, convergence slows drastically
 
@@ -351,21 +351,21 @@ F(η^{k+1}) \leq F(η^k) \quad \forall k
 
 ---
 
-## Test Coverage
+## Test coverage
 
-Stability guarantees are validated by:
+Stability behavior in this repository is validated by:
 
-### Direct Tests
+### Direct tests
 
 - `tests/test_stability_coupling_cap.py`: Auto-cap applied correctly
 - `tests/test_stability_coupling_sweep.py`: Stability across coupling strengths
-- `tests/test_stability_margin_warnings.py`: ✅ **NEW** — Warning system (3 tests)
+- `tests/test_stability_margin_warnings.py`: **NEW**, warning system (3 tests)
 - `tests/test_monotonic_energy.py`: Monotonicity assertions work
 
-### Integration Tests
+### Integration tests
 
 - `tests/test_small_gain_weight_adapter.py`: SmallGain keeps monotone energy
-- `tests/test_polynomial_conditioning.py`: ✅ **NEW** — Polynomial bases improve stability
+- `tests/test_polynomial_conditioning.py`: **NEW**, polynomial bases improve stability
 - All `test_coordinator_*.py`: Energy non-increasing across modes
 
 **Run all stability tests**:
@@ -376,9 +376,9 @@ uv run -m pytest tests/ -k "stability or monotonic or margin" -v
 
 ---
 
-## Real-World Example
+## Worked example
 
-### Problem: Dense Coupling Graph Diverges
+### Problem: dense coupling graph diverges
 
 ```python
 # BAD: No stability guard, large step, strong couplings
@@ -394,7 +394,7 @@ etas = coord.relax_etas(etas0, steps=50)
 # Energy diverges after ~10 steps
 ```
 
-### Solution 1: Enable Guard
+### Solution 1: enable guard
 
 ```python
 # GOOD: Stability guard auto-caps step size
@@ -411,10 +411,10 @@ etas = coord.relax_etas(etas0, steps=50)
 # Converges safely, but slowly (step size capped to ~0.01)
 ```
 
-### Solution 2: SmallGain Allocator (Optimal)
+### Solution 2: SmallGain allocator
 
 ```python
-# BEST: SmallGain allocates budget optimally
+# SmallGain allocates budget using value/cost priorities
 from core.weight_adapters import SmallGainWeightAdapter
 
 coord = EnergyCoordinator(
@@ -426,36 +426,36 @@ coord = EnergyCoordinator(
 )
 
 etas = coord.relax_etas(etas0, steps=50)
-# Converges 40% faster than Solution 1, with 4x better final energy
+# In this scenario, converges faster than Solution 1 with lower final energy
 ```
 
 ---
 
-## Stability Modes Compared
+## Stability modes compared
 
-### 1. No Guard (Default — Use for Prototyping Only)
+### 1. No guard (default, use for prototyping only)
 
 ```python
 coord = EnergyCoordinator(stability_guard=False)
 ```
 
-**Guarantees**: ❌ None  
-**Pros**: Fastest (no overhead)  
-**Cons**: Can diverge on difficult landscapes  
+**Guarantees**:  None
+**Pros**: Fastest (no overhead)
+**Cons**: Can diverge on difficult landscapes
 **Use when**: Small graphs, smooth energies, debugging
 
-### 2. Standard Stability Guard
+### 2. Standard stability guard
 
 ```python
 coord = EnergyCoordinator(stability_guard=True)
 ```
 
-**Guarantees**: ✅ Energy non-increasing (if L estimate is accurate)  
-**Pros**: Simple, low overhead (~5%)  
-**Cons**: Conservative (uniform cap wastes budget)  
+**Guarantees**:  Energy non-increasing (if L estimate is accurate)
+**Pros**: Simple, low overhead (~5%)
+**Cons**: Conservative (uniform cap wastes budget)
 **Use when**: Simple graphs, safety-critical systems, conservative baseline
 
-### 3. SmallGain Allocator ✅ RECOMMENDED
+### 3. SmallGain allocator (recommended for dense benchmark scenarios)
 
 ```python
 coord = EnergyCoordinator(
@@ -464,16 +464,16 @@ coord = EnergyCoordinator(
 )
 ```
 
-**Guarantees**: ✅ Energy non-increasing + optimal budget usage  
-**Pros**: 40% faster convergence on dense graphs, 4x better final energy  
-**Cons**: 2-5x computational overhead per step  
-**Use when**: Dense graphs (10+ modules), production systems, energy quality matters
+**Guarantees**:  Energy non-increasing + optimal budget usage
+**Pros**: 40% faster convergence on dense graphs, 4x better final energy
+**Cons**: 2-5x computational overhead per step
+**Use when**: Dense graphs (10+ modules), and energy quality matters more than per-step compute cost
 
 ---
 
-## Gershgorin Bound (Implementation Details)
+## Gershgorin bound (implementation details)
 
-### How We Estimate L
+### How we estimate L
 
 For each module \( i \), we estimate the local Hessian contribution:
 
@@ -499,7 +499,7 @@ L_i^{row} = L_i^{local} + \sum_j L_{ij}^{coupling}
 L = \max_i L_i^{row}
 \]
 
-### Coupling-Specific Estimates
+### Coupling-specific estimates
 
 | Coupling Type | Lipschitz Contribution |
 |---------------|------------------------|
@@ -511,7 +511,7 @@ L = \max_i L_i^{row}
 
 ---
 
-## Contraction Margin Interpretation
+## Contraction margin interpretation
 
 ### Definition
 
@@ -521,14 +521,14 @@ L = \max_i L_i^{row}
 
 **Physical Meaning**: How much "safety budget" is left unused.
 
-### Healthy Margins
+### Healthy margins
 
-- **margin > 0.01**: ✅ Excellent — plenty of room for adaptation
-- **margin ∈ [0.001, 0.01]**: ✅ Good — system is well-tuned
-- **margin ∈ [1e-6, 0.001]**: ⚠️ Tight — consider backing off
-- **margin < 1e-6**: ❌ Warning emitted — instability risk
+- **margin > 0.01**: room remains for adaptation
+- **margin ∈ [0.001, 0.01]**: stable but tighter
+- **margin ∈ [1e-6, 0.001]**: tight, consider backing off
+- **margin < 1e-6**: warning emitted, instability risk
 
-### SmallGain Budget Tracking
+### SmallGain budget tracking
 
 The allocator tracks:
 
@@ -540,9 +540,9 @@ The allocator tracks:
 
 ---
 
-## Advanced: Passivity & Dissipativity
+## Advanced: passivity and dissipativity
 
-### Passivity Interpretation
+### Passivity interpretation
 
 Treating the coordinator as a dynamical system:
 
@@ -558,7 +558,7 @@ The energy F acts as a **storage function**. The system is **passive** if:
 
 **Physical Meaning**: Energy can only decrease (like friction dissipating heat).
 
-### Small-Gain Theorem (Control Theory)
+### Small-Gain theorem (control theory)
 
 For interconnected subsystems with gains \( \gamma_i \):
 
@@ -574,9 +574,9 @@ For interconnected subsystems with gains \( \gamma_i \):
 
 ---
 
-## Empirical Validation
+## Empirical validation
 
-### SmallGain Allocator Results
+### SmallGain allocator results
 
 From `docs/SMALLGAIN_VALIDATION_FINAL.md`:
 
@@ -588,9 +588,9 @@ From `docs/SMALLGAIN_VALIDATION_FINAL.md`:
 - Standard guard: ΔF90 = 40 steps, **diverges** (final energy positive)
 - **SmallGain**: ΔF90 = 12 steps, final energy = -0.094 (stable)
 
-**Conclusion**: SmallGain not only faster, but **prevents divergence** on difficult landscapes.
+**Conclusion**: In these benchmark scenarios, SmallGain converges faster and reaches lower final energy than the compared baselines.
 
-### Polynomial Conditioning Results
+### Polynomial conditioning results
 
 From `tests/test_polynomial_conditioning.py`:
 
@@ -608,7 +608,7 @@ From `tests/test_polynomial_conditioning.py`:
 
 **A**: No, but recommended for:
 - Dense coupling graphs
-- Production systems
+- scenarios with stronger coupling interactions
 - When coupling weights are tuned empirically (not hand-picked)
 - Safety-critical applications
 
@@ -647,12 +647,12 @@ coord = EnergyCoordinator(
 
 ## Summary
 
-✅ **Stability Guard**: Lyapunov-based step capping (simple, low overhead)  
-✅ **SmallGain Allocator**: Optimal budget allocation (40% faster, production-ready)  
-✅ **Polynomial Bases**: Improved conditioning (smoother convergence)  
-✅ **Contraction Margin**: Observable safety metric with warnings  
+- **Stability guard**: Lyapunov-style step capping with conservative bounds
+- **SmallGain allocator**: Budget allocation that improved dense benchmark convergence in this repo
+- **Polynomial bases**: Improved conditioning (smoother convergence)
+- **Contraction margin**: observable safety metric with warnings
 
-**Recommendation for Production**:
+**Recommended configuration for these repository demos**:
 
 ```python
 from core.coordinator import EnergyCoordinator
@@ -672,10 +672,10 @@ coord = EnergyCoordinator(
 ```
 
 This configuration provides:
-- ✅ Formal stability guarantees
-- ✅ Optimal convergence speed
-- ✅ Real-time warnings
-- ✅ Production-validated defaults
+- conservative stability controls
+- faster convergence on the documented dense benchmarks
+- runtime warnings
+- reproducible defaults for this repository
 
 ---
 
@@ -692,10 +692,10 @@ This configuration provides:
 - SmallGain: `core/weight_adapters.py` (`SmallGainWeightAdapter`)
 - Tests: `tests/test_stability_*.py`, `tests/test_small_gain_*.py`
 
-### Related Docs
+### Related docs
 
-- `docs/SMALLGAIN_VALIDATION_FINAL.md` — Empirical validation results
-- `docs/PROXIMAL_METHODS.md` — Proximal operators for stability
-- `docs/POLYNOMIAL_BASES.md` — Conditioning via orthonormal bases
-- `README.md` — Quick-start examples
+- `docs/SMALLGAIN_VALIDATION_FINAL.md`, empirical validation results
+- `docs/PROXIMAL_METHODS.md`, proximal operators for stability
+- `docs/POLYNOMIAL_BASES.md`, conditioning via orthonormal bases
+- `README.md`, quick-start examples
 

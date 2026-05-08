@@ -1,6 +1,6 @@
 # Bilinear Couplings in the Neuro‑Symbolic Homeostat
 
-Status: Design document (optional feature; not enabled by default, you will have to implement it)  
+Status: Design document (optional feature; not enabled by default, you will have to implement it)
 Intent: Explain what a bilinear coupling adds, its impact on stability/solver choices, and a safe path to implement behind a flag.
 
 ---
@@ -10,7 +10,7 @@ Intent: Explain what a bilinear coupling adds, its impact on stability/solver ch
 Existing couplings cover:
 - Quadratic springs: encourage equality (η_i − η_j → 0)
 - Hinge variants: one‑sided activation/gaps
-- Wormhole: linear non‑local force
+- CGBC/wormhole: linear non-local gate force
 
 These do not encode multiplicative synergy/competition directly. A bilinear term provides that:
 
@@ -109,10 +109,10 @@ This 2×2 system is cheap and stabilizes updates when \(w \neq 0\). It is recomm
 
 ---
 
-## 5. PSON, Wormhole, and Mixed Regimes
+## 5. PSON, CGBC/wormhole, and mixed regimes
 
 - PSON: Keep bilinear out of the diagonal precision used for noise scaling. Continue scaling noise with \(\Lambda^{-1}\) (module + convex coupling curvature) and keep orthogonality to the gradient.
-- Wormhole: Unchanged. Wormhole is linear (force), not curvature; it pairs well with bilinear but is orthogonal in purpose (non‑local credit vs multiplicative interaction).
+- CGBC/wormhole: Unchanged. CGBC is linear (force), not curvature; it pairs well with bilinear but is orthogonal in purpose (non-local credit vs multiplicative interaction).
 - Hinges/Springs: Provide diagonal curvature that tames bilinear cross‑terms.
 
 ---
@@ -180,11 +180,11 @@ Integration points:
 
 ## 9. Tests to Add (once implemented)
 
-1) Gradients: analytic vs finite‑difference on random η pairs and weights  
-2) Gershgorin: row sum increases by |w| for both rows; diagonal unchanged  
-3) Stability: with Small‑Gain on, ΔF ≤ 0 for a small graph with bilinear + locals  
-4) Solver: GS/2×2 update converges faster/cleaner than Jacobi on the same graph  
-5) PSON: noise energy contribution remains bounded; orthogonality preserved  
+1) Gradients: analytic vs finite‑difference on random η pairs and weights
+2) Gershgorin: row sum increases by |w| for both rows; diagonal unchanged
+3) Stability: with Small‑Gain on, ΔF ≤ 0 for a small graph with bilinear + locals
+4) Solver: GS/2×2 update converges faster/cleaner than Jacobi on the same graph
+5) PSON: noise energy contribution remains bounded; orthogonality preserved
 
 ---
 

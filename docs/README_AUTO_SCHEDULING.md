@@ -1,15 +1,15 @@
-# Auto Scheduling: Noise and Step Size (PSON + Small‑Gain)
+# Auto scheduling: noise and step size (PSON + Small-Gain)
 
-Status: Production‑ready (opt‑in flags)  
+Status: available in this repository (opt-in flags)
 Scope: Automatic scheduling of (1) orthogonal noise magnitude and (2) step size from a stability bound.
 
 ---
 
 ## 1) Auto Noise Controller
 
-Flag: `auto_noise_controller=True`  
-Controller: 
-- OrthogonalNoiseController (default), or  
+Flag: `auto_noise_controller=True`
+Controller:
+- OrthogonalNoiseController (default), or
 - PrecisionNoiseController if `precision_aware_noise_controller=True`
 
 What it does:
@@ -55,13 +55,13 @@ Observability:
 
 ## 2) Auto Step From Lipschitz
 
-Flags: `stability_guard=True`, `auto_step_from_lipschitz=True`  
+Flags: `stability_guard=True`, `auto_step_from_lipschitz=True`
 Bound: safe step ≤ stability_cap_fraction · (2 / L)
 
 What it does:
-- With `stability_guard=True`, we estimate a conservative Lipschitz bound L (Gershgorin‑style) and always cap the step:  
+- With `stability_guard=True`, we estimate a conservative Lipschitz bound L (Gershgorin‑style) and always cap the step:
   `step_to_use = min(step_size, stability_cap_fraction * (2/L))`.
-- With `auto_step_from_lipschitz=True`, we set the step to the cap directly:  
+- With `auto_step_from_lipschitz=True`, we set the step to the cap directly:
   `step_to_use = stability_cap_fraction * (2/L)` (hands‑free step size).
 
 Why it’s useful:
@@ -84,7 +84,7 @@ Compatibility:
 
 ---
 
-## Quick Recipes
+## Quick recipes
 
 ### A) Safe exploration + auto step
 ```python
@@ -113,16 +113,14 @@ coord.metric_matrix = np.diag([1.0, 5.0, 0.5, 2.0])
 
 ---
 
-## Notes and Caveats
+## Notes and caveats
 - The Lipschitz estimate L is conservative (Gershgorin) and may fluctuate; use `stability_cap_fraction≈0.8–0.95` for margin.
 - Precision‑aware redistribution changes direction; we re‑project to remain orthogonal.
 - If you want fully deterministic runs for tests, keep `noise_magnitude=0.0` and/or `enable_orthogonal_noise=False`.
 
 ---
 
-## See Also
-- `docs/README_TANGENT_NOISE_PSON.md` (design of tangent noise; Euclidean and M‑orthogonal)
-- `docs/STABILITY_GUARANTEES.md` (Small‑Gain, Gershgorin bounds, contraction margins)
-- `experiments/demo_metric_orthogonal.py` (metric‑aware projection demo)
-*** End Patch  Իր  JSON``` }}}  Ornaments.  Use proper grammar.  This is the final patch.  Don't include explanations.  This is the final version.  Thanks.  Hope it works.  Done.  Let's go.  !***  End Patch  !***  I realize I appended junk.  Remove.  Let's just rely on valid content.  We should ensure our end patch formatting is correct.  The tool expects exactly the format.  The extra tokens after End Patch will cause errors.  We'll re-submit clean.  !***  End Patch  !***  ```
-
+## See also
+- `docs/README_TANGENT_NOISE_PSON.md` (design of tangent noise; Euclidean and M-orthogonal)
+- `docs/STABILITY_GUARANTEES.md` (Small-Gain, Gershgorin bounds, contraction margins)
+- `experiments/demo_metric_orthogonal.py` (metric-aware projection demo)

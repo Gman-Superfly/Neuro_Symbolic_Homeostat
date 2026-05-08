@@ -1,6 +1,6 @@
 # Free-Energy Stability Guard (F = U - TS)
 
-Status: Optional Feature (Phase 2)  
+Status: Optional Feature (Phase 2)
 Scope: Acceptance criteria based on thermodynamic free energy.
 
 ---
@@ -76,5 +76,5 @@ When enabled, `relax_etas` will:
 
 - **T = 0**: Equivalent to standard energy minimization (greedy).
 - **Small T (0.01 - 0.1)**: Slight regularization against boundary collapse; cleaner gradients near 0/1.
-- **Large T (1.0+)**: Strong preference for uncertainty (\(\eta \approx 0.5\)); system will only commit to 0 or 1 if constraints (\(U\)) are very strong. Useful for annealing.
+- **Large T (1.0+)**: Strong preference for uncertainty (\(\eta \approx 0.5\)); system will only commit to 0 or 1 if constraints (\(U\)) are sufficiently strong. Useful for annealing.
 

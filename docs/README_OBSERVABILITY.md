@@ -1,6 +1,6 @@
-# Observability: Trackers and Logging
+# Observability: trackers and logging
 
-Status: Production‑ready  
+Status: available in this repository
 Scope: How to attach telemetry trackers to the EnergyCoordinator to monitor relaxation dynamics, stability, and budgets.
 
 ---
@@ -33,7 +33,7 @@ coord.relax_etas(etas0, steps=50)
 tracker.flush()
 ```
 
-### Output Columns
+### Output columns
 - `step`, `energy`, `delta_energy`
 - `min_eta`, `max_eta`, `mean_eta`
 - `eta:{i}` (if `log_per_eta=True`)
@@ -64,7 +64,7 @@ coord.relax_etas(etas0, steps=50)
 tracker.flush()
 ```
 
-### Output Columns
+### Output columns
 - **Terms**: `energy:local:MyModule`, `energy:coup:MyCoupling`, `grad_norm:local:...`
 - **Stability**: `contraction_margin`, `margin:global`, `margin:row:{i}` (if Small-Gain active)
 - **Thermodynamics**: `U_internal_energy`, `S_entropy`, `F_free_energy`, `T_temperature`
@@ -73,10 +73,10 @@ tracker.flush()
 
 ---
 
-## 3. Best Practices
+## 3. Best practices
 
-1.  **Attach Once**: Attach trackers immediately after creating the coordinator.
-2.  **Flush Often**: Call `flush()` after each major relaxation loop or experiment block to ensure data is written.
-3.  **Use Run IDs**: Use unique `run_id`s to distinguish experiments in the aggregated log files.
+1.  **Attach once**: Attach trackers immediately after creating the coordinator.
+2.  **Flush often**: Call `flush()` after each major relaxation loop or experiment block to ensure data is written.
+3.  **Use run IDs**: Use unique `run_id`s to distinguish experiments in the aggregated log files.
 4.  **Performance**: `log_per_eta` and detailed budget logging have overhead; disable for massive high-speed loops, enable for debugging/tuning.
 

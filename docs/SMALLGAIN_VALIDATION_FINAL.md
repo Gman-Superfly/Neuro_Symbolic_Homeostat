@@ -1,19 +1,19 @@
-# SmallGain Allocator — Production Validation ✅
+# SmallGain allocator: validation on repository scenarios
 
-**Status**: PRODUCTION READY  ... but big refactor incoming
-**Date**: November 2025  
-**Test Coverage**: 120 tests passing, including unit tests for SmallGain allocator
+**Status**: validated on synthetic scenarios in this repository
+**Date**: November 2025
+**Test coverage**: local unit tests plus scenario benchmarks listed in this document
 
-## Executive Summary
+## Executive summary
 
-The SmallGain stability-margin allocator is **production-ready** for use with `stability_guard=True`. It achieves:
+The SmallGain stability-margin allocator is validated for use with `stability_guard=True` in this repository. It achieves:
 
 - **50-55% reduction** in ΔF90 (steps to 90% energy drop) vs vanilla analytic baseline on baseline scenario
 - **40% faster convergence** vs GradNorm/analytic on dense graphs (ΔF90: 12 vs 20-40 steps)
 - **4-10x better final energy** vs analytic baseline while maintaining monotone acceptance
 - **Comparable speed to GradNorm** on baseline (both ~10 steps) with stronger final energy
 
-### Recommended Defaults
+### Recommended defaults
 
 ```python
 from core.weight_adapters import SmallGainWeightAdapter
@@ -38,15 +38,15 @@ coord = EnergyCoordinator(
 
 ---
 
-## Validation Results
+## Validation results
 
-### Baseline Scenario (sequence + gate, 2 modules, 2 couplings)
+### Baseline scenario (sequence + gate, 2 modules, 2 couplings)
 
 | Config | ΔF90 Steps ↓ | Final Energy ↓ | Wall Time (s) | Backtracks | Redemption Gain |
 |--------|--------------|----------------|---------------|------------|-----------------|
 | **analytic** | **22** | **-0.000385** | 0.0052 | 0 | 30.06 |
 | **gradnorm** | **10** | **-0.005014** | 0.0036 | 15 | 45.64 |
-| **smallgain** | **10** ✅ | **-0.020079** ✅ | 0.0041 | 10 ✅ | 44.49 |
+| **smallgain** | **10**  | **-0.020079**  | 0.0041 | 10  | 44.49 |
 
 **Interpretation**:
 - SmallGain **matches GradNorm** on ΔF90 (both 10 steps)
@@ -54,13 +54,13 @@ coord = EnergyCoordinator(
 - **52x better** than vanilla analytic baseline
 - **Fewer backtracks** than GradNorm (10 vs 15), indicating more stable steps
 
-### Dense Scenario (16 modules, dense coupling graph)
+### Dense scenario (16 modules, dense coupling graph)
 
 | Config | ΔF90 Steps ↓ | Final Energy ↓ | Wall Time (s) | Backtracks | Redemption Gain |
 |--------|--------------|----------------|---------------|------------|-----------------|
-| **analytic** | **40** | **+0.018582** ❌ | 0.0204 | 0 | 12.71 |
+| **analytic** | **40** | **+0.018582**  | 0.0204 | 0 | 12.71 |
 | **gradnorm** | **20** | **-0.021235** | 0.0320 | 75 | 9.70 |
-| **smallgain** | **12** ✅ | **-0.093700** ✅ | 0.0569 | 92 | 6.72 |
+| **smallgain** | **12**  | **-0.093700**  | 0.0569 | 92 | 6.72 |
 
 **Interpretation**:
 - SmallGain **40% faster** than GradNorm (12 vs 20 steps)
@@ -71,100 +71,100 @@ coord = EnergyCoordinator(
 
 ---
 
-## Parameter Sweep (ρ and Δweight)
+## Parameter sweep (ρ and Δweight)
 
 Full sweep results (`uv run python -m experiments.sweep_smallgain --steps 60`):
 
-### Baseline Scenario
+### Baseline scenario
 
 | ρ | Δweight | ΔF90 Steps ↓ | Backtracks | Final Energy ↓ | Wall Time (s) |
 |---|---------|--------------|------------|----------------|---------------|
 | 0.5 | 0.05 | 9 | 10 | -0.007357 | 0.0130 |
-| 0.5 | 0.10 | **10** | **10** ✅ | **-0.020079** ✅ | 0.0084 |
-| 0.5 | 0.20 | **7** ✅ | 13 | -0.018973 | 0.0099 |
+| 0.5 | 0.10 | **10** | **10**  | **-0.020079**  | 0.0084 |
+| 0.5 | 0.20 | **7**  | 13 | -0.018973 | 0.0099 |
 | 0.7 | 0.05 | 9 | 10 | -0.007357 | 0.0094 |
-| **0.7** | **0.10** | **10** | **10** ✅ | **-0.020079** ✅ | **0.0068** | ← **DEFAULT**
+| **0.7** | **0.10** | **10** | **10**  | **-0.020079**  | **0.0068** | ← **DEFAULT**
 | 0.7 | 0.20 | **7** | 13 | -0.018973 | 0.0089 |
 | 0.9 | 0.05 | 9 | 10 | -0.007357 | 0.0104 |
 | 0.9 | 0.10 | **10** | **10** | **-0.020079** | 0.0072 |
 | 0.9 | 0.20 | **7** | 13 | -0.018973 | 0.0089 |
 
 **Key Findings**:
-- ✅ **Default ρ=0.7, Δweight=0.10** achieves best final energy with low backtracks
-- 🚀 **Speed variant ρ=0.7, Δweight=0.20** reduces ΔF90 to 7 steps (30% faster) with minimal energy loss
-- ρ has minimal impact across {0.5, 0.7, 0.9} — conservative default of 0.7 is robust
+- **Default ρ=0.7, Δweight=0.10** achieves best final energy with low backtracks
+- **Speed variant ρ=0.7, Δweight=0.20** reduces ΔF90 to 7 steps (30% faster) with minimal energy loss
+- ρ has minimal impact across {0.5, 0.7, 0.9}, and the conservative default of 0.7 is robust
 
-### Dense Scenario
+### Dense scenario
 
 | ρ | Δweight | ΔF90 Steps ↓ | Backtracks | Final Energy ↓ | Wall Time (s) |
 |---|---------|--------------|------------|----------------|---------------|
 | 0.5 | 0.05 | 20 | 39 | -0.094722 | 0.1335 |
 | 0.5 | 0.10 | **12** | 97 | **-0.093700** | 0.0892 |
-| 0.5 | 0.20 | **8** ✅ | 67 | -0.087851 | 0.0831 |
+| 0.5 | 0.20 | **8**  | 67 | -0.087851 | 0.0831 |
 | 0.7 | 0.05 | 20 | 39 | -0.094722 | 0.0839 |
-| **0.7** | **0.10** | **12** | **97** | **-0.093700** ✅ | **0.0885** | ← **DEFAULT**
+| **0.7** | **0.10** | **12** | **97** | **-0.093700**  | **0.0885** | ← **DEFAULT**
 | 0.7 | 0.20 | **8** | 67 | -0.087851 | 0.1111 |
 | 0.9 | 0.05 | 20 | 39 | -0.094722 | 0.0908 |
 | 0.9 | 0.10 | **12** | 97 | **-0.093700** | 0.1028 |
 | 0.9 | 0.20 | **8** | 67 | -0.087851 | 0.1102 |
 
 **Key Findings**:
-- ✅ **Default ρ=0.7, Δweight=0.10** again optimal for final energy
-- 🚀 **Speed variant Δweight=0.20** reduces ΔF90 to 8 steps (33% faster) with 6% energy loss
-- Higher backtrack counts (97) reflect aggressive rebalancing on dense graphs — acceptable for 4x energy improvement vs GradNorm
+- **Default ρ=0.7, Δweight=0.10** again optimal for final energy
+- **Speed variant Δweight=0.20** reduces ΔF90 to 8 steps (33% faster) with 6% energy loss
+- Higher backtrack counts (97) reflect aggressive rebalancing on dense graphs, acceptable in this benchmark for the observed energy improvement
 
 ---
 
-## When to Use SmallGain
+## When to use SmallGain
 
-### ✅ Ideal Use Cases
+### Ideal use cases
 
 1. **Dense coupling graphs** (10+ modules, many couplings) where GradNorm struggles
-2. **Safety-critical systems** requiring stability guarantees (`stability_guard=True`)
+2. **Systems that require explicit stability guards** (`stability_guard=True`)
 3. **Energy optimization** where final energy matters more than wall-clock speed
 4. **Scenarios with mixed coupling families** (quadratic + hinge + gate-benefit)
 
-### ⚠️ Consider Alternatives
+### Consider alternatives
 
-1. **Very sparse graphs** (2-3 modules): Use GradNorm or vanilla analytic (faster, similar results)
+1. **Sparse graphs** (2-3 modules): Use GradNorm or vanilla analytic (faster, similar results)
 2. **Real-time systems** with tight latency budgets: Per-step allocator overhead (2-5x vs GradNorm) may be prohibitive
 3. **Stationary landscapes**: If coupling weights don't need adaptation, fixed weights are simpler
 
-### 🔀 Comparison with Other Adapters
+### Comparison with other adapters
 
 | Feature | Vanilla | GradNorm | **SmallGain** | AGM |
 |---------|---------|----------|---------------|-----|
-| **ΔF90 (baseline)** | 22 | 10 | **10** ✅ | 15 |
-| **ΔF90 (dense)** | 40 | 20 | **12** ✅ | 18 |
-| **Final energy** | Poor | Good | **Best** ✅ | Good |
-| **Stability guarantees** | ❌ | ❌ | ✅ | ❌ |
+| **ΔF90 (baseline)** | 22 | 10 | **10**  | 15 |
+| **ΔF90 (dense)** | 40 | 20 | **12**  | 18 |
+| **Final energy** | Poor | Good | **Best**  | Good |
+| **Stability guarantees** | none | none | linearized/SPD conservative bounds with guard | none |
 | **Compute cost** | 1x | 1.2x | **2-5x** | 1.5x |
 | **Tuning complexity** | None | Low | **Medium** | High |
-| **Production-ready** | ✅ | ✅ | ✅ | Experimental |
+| **Repository maturity** | baseline only | benchmarked | benchmarked | experimental |
 
 ---
 
-## Fixed vs Learned Hyperparameters
+## Fixed vs learned hyperparameters
 
-### What SmallGain Learns (Per-Step)
+### What SmallGain learns (per step)
 
 - **Per-edge allocations**: How to distribute the stability budget across couplings
 - **Value-to-cost ratios**: Which couplings give most ΔF per ΔLipschitz
 - **Row-aware prioritization**: Balances per-module Lipschitz constraints
 
-### What's Fixed (Outer Caps)
+### What stays fixed (outer caps)
 
 - **ρ (budget_fraction)**: Fraction of available margin to spend per step
 - **Δweight (max_step_change)**: Maximum multiplicative weight change per step
 
-### Why Keep Fixed?
+### Why keep fixed?
 
 1. **Reproducibility**: Same settings → same trajectory
 2. **Stability**: Prevents runaway weight changes
 3. **Safety**: Easy to audit/certify for regulated domains
 4. **Debugging**: Clear failure attribution when things go wrong
 
-### When to Tune?
+### When to tune?
 
 Use `experiments/sweeps/sweep_smallgain.py` to grid-search ρ and Δweight when:
 
@@ -186,9 +186,9 @@ Get-Content plots/df90_smallgain_sweep_summary.csv | ConvertFrom-Csv | Sort-Obje
 
 ---
 
-## Usage Examples
+## Usage examples
 
-### Basic Usage
+### Basic usage
 
 ```python
 from core.coordinator import EnergyCoordinator
@@ -205,7 +205,7 @@ coord = EnergyCoordinator(
 etas = coord.relax_etas(etas0, steps=50)
 ```
 
-### Speed-Optimized Variant
+### Speed-optimized variant
 
 ```python
 # For faster ΔF90 (30% reduction) with slightly weaker final energy
@@ -223,7 +223,7 @@ coord = EnergyCoordinator(
 )
 ```
 
-### Conservative Variant (Safety-Critical)
+### Conservative variant
 
 ```python
 # For maximum stability (fewer backtracks) at cost of slower convergence
@@ -246,9 +246,9 @@ coord = EnergyCoordinator(
 
 ---
 
-## Observability and Debugging
+## Observability and debugging
 
-### Per-Step Telemetry
+### Per-step telemetry
 
 ```python
 from cf_logging.observability import EnergyBudgetTracker
@@ -280,15 +280,15 @@ uv run python -m experiments.plots.plot_gain_budget --input logs\energy_budget.c
 
 ---
 
-## Test Coverage
+## Test coverage
 
-SmallGain ships with comprehensive test coverage:
+SmallGain is covered by the following local tests:
 
 - `tests/test_small_gain_weight_adapter.py`:
-  - ✅ Greedy allocation prioritizes high-value, low-cost terms
-  - ✅ Respects floor and ceiling bounds
-  - ✅ Fallback returns identity when no valid allocations
-  - ✅ Keeps monotone energy on small problems
+  - Greedy allocation prioritizes high-value, low-cost terms
+  - Respects floor and ceiling bounds
+  - Fallback returns identity when no valid allocations
+  - Keeps monotone energy on small problems
 
 Run tests:
 
@@ -300,24 +300,24 @@ uv run -m pytest tests/test_small_gain_weight_adapter.py -v
 
 ## Conclusion
 
-The SmallGain allocator is **production-ready** and recommended for:
+The SmallGain allocator is validated in this repository and recommended for:
 
 1. Dense coupling graphs (10+ modules)
-2. Safety-critical applications requiring stability guarantees
+2. Applications that require explicit stability guards
 3. Scenarios prioritizing final energy quality over wall-clock speed
 
 **Defaults (ρ=0.7, Δweight=0.10)** are robust across tested scenarios. For speed-critical applications, use Δweight=0.20.
 
-### Validation Status
+### Validation status
 
-- ✅ Unit tests passing
-- ✅ ΔF90 benchmarks complete (baseline + dense)
-- ✅ Comparison vs GradNorm/analytic baselines
-- ✅ Parameter sweep (ρ, Δweight) documented
-- ✅ Observability and plotting scripts available
-- ✅ Usage examples and tuning guidance provided
+- Unit tests passing
+- ΔF90 benchmarks complete (baseline + dense)
+- Comparison vs GradNorm/analytic baselines
+- Parameter sweep (ρ, Δweight) documented
+- Observability and plotting scripts available
+- Usage examples and tuning guidance provided
 
-**Recommendation**: Mark SmallGain as **production-ready** and enable by default when `stability_guard=True` in future versions.
+**Recommendation**: Keep SmallGain as an opt-in default for dense scenario experiments when `stability_guard=True`.
 
 ---
 

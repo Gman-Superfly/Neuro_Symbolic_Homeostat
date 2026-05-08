@@ -1,6 +1,6 @@
-# Proximal Operator Splitting and ADMM
+# Proximal operator splitting and ADMM
 
-Status: Experimental / Advanced Feature  
+Status: experimental / advanced feature
 Scope: Solving energy minimization via proximal operators instead of gradient steps.
 
 ---
@@ -15,7 +15,7 @@ The coordinator supports two modes:
 
 ---
 
-## 2. Why Use It?
+## 2. Why use it?
 
 - **Exact Constraint Handling**: Proximal steps project exactly onto the constraint manifold (e.g., \(\eta \in [0,1]\), hinge satisfied).
 - **Stability**: Implicit steps are unconditionally stable for convex terms, allowing larger step sizes than explicit gradient descent.
@@ -23,7 +23,7 @@ The coordinator supports two modes:
 
 ---
 
-## 3. Proximal Operators Implemented
+## 3. Proximal operators implemented
 
 Located in `core/prox_utils.py`:
 
@@ -44,7 +44,7 @@ Solves the proximal operator for linear terms like \(c \cdot \eta\).
 
 ---
 
-## 4. ADMM Implementation
+## 4. ADMM implementation
 
 When `use_admm=True`, the `relax_etas_admm` loop runs:
 

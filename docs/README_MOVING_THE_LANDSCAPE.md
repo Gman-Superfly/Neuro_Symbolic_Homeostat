@@ -1,102 +1,102 @@
-# Moving the Landscape: A Unified Strategy
+# Moving the energy function: a unified strategy
 
-Status: Conceptual Overview  
-Scope: Why we use four distinct techniques to build the Neuro-Symbolic Homeostat, and how they combine to create a system greater than the sum of its parts.
+Status: conceptual overview
+Scope: why we use four techniques in the Neuro-Symbolic Homeostat, and how they interact.
 
-The Techniques mentioned here are expanded even further in our neursymbolic playground *complexity from Constraints*
-
----
-
-## 1. The Philosophy: Don’t Just Descend, Shape
-
-Standard optimization asks: *"Given a fixed energy landscape, how do I find the bottom?"*  
-This assumes the landscape is static and the only tool is a "ball" rolling down a hill. In complex logical problems (which are often non-convex, discrete, or flat), this ball gets stuck in local minima or wanders aimlessly on plateaus.
-
-**Our approach asks: "How can I move the landscape so the bottom finds me?"**
-
-We view inference not as a passive descent, but as an active process of **landscape manipulation**. We do not rely on a single "super-optimizer." Instead, we combine four focused mechanisms that manipulate the energy surface and the agent's trajectory in complementary ways. By exploiting algebraic equivalences, we replace expensive global operations with fast, local updates, yielding a system that behaves like a sophisticated global solver but runs with the speed of a local one.
+The techniques mentioned here are expanded in *Complexity from Constraints*.
 
 ---
 
-## 2. The Four Pillars of Landscape Manipulation
+## 1. The philosophy: don’t just descend, shape
+
+Standard optimization asks: *"Given a fixed energy function, how do I find the minimum?"*
+This assumes the objective is static and the only tool is descent. In complex logical problems, which are often non-convex, discrete, or flat, descent can stall in local minima or plateaus.
+
+**Our approach asks: "How can I modify the objective and updates so optimization remains stable and informative?"**
+
+We view inference as an active process that combines four mechanisms. We do not rely on one optimizer. By using algebraic equivalences, we replace expensive global operations with faster local updates.
+
+---
+
+## 2. The four mechanism groups
 
 We use four focused systems to coordinate the homeostat. Each solves a specific failure mode of standard gradient descent (GD).
 
-### A. Precision-Scaled Orthogonal Noise (PSON)
-**Role**: Safe Exploration / "Shaking the Box"  
-**The Problem**: To escape local traps, you need exploration (noise). But standard noise (Langevin dynamics) is isotropic—it shakes in all directions equally. This often means fighting the gradient you just worked hard to descend, pushing you back uphill and slowing convergence.
+### A. Precision-scaled orthogonal noise (PSON)
+**Role**: Safe Exploration / "Shaking the Box"
+**The problem**: To escape local traps, you need exploration noise. Standard isotropic noise perturbs all directions equally and can oppose descent.
 **The Solution**: We inject noise strictly *orthogonal* to the descent direction (tangent noise). Furthermore, we scale this noise by the inverse precision (curvature). Directions that are "stiff" (high curvature, certain) get little noise; directions that are "slack" (flat, uncertain) get more.
-**The Effect**: The system aggressively explores the "flat" null-space of the landscape without destabilizing the energy minimization. It’s like shaking a tray of sand horizontally to settle it, rather than tossing it in the air.
+**The effect**: The system explores flat null-space directions while keeping descent behavior more stable.
 *See `docs/README_TANGENT_NOISE_PSON.md` for technical details.*
 
-### B. Small-Gain Stability (The "Projector")
-**Role**: Bounded Dynamics / "The Guard Rail"  
-**The Problem**: Logical constraints can create strong feedback loops. If you couple variables too tightly, the system becomes unstable—oscillating wildly or diverging (exploding gradients). Standard fixes (learning rate decay) make the system sluggish.
-**The Solution**: We enforce **Gershgorin circle bounds** on the coupling matrix. This is a fast, local projection that guarantees the spectral radius of the Jacobian stays < 1. It ensures the system is mathematically **contractive**.
-**The Effect**: We can safely adjust coupling strengths ("move the landscape") without ever risking divergence. Stability becomes a structural constraint we enforce, not a parameter we hopefully tune. This allows for much more aggressive dynamics than standard GD would permit.
+### B. Small-Gain stability (the projector)
+**Role**: Bounded dynamics / "the guard rail"
+**The problem**: Strong couplings can create unstable feedback loops and divergence.
+**The solution**: We enforce Gershgorin-based conservative bounds on couplings. In linear and SPD settings, these bounds support contraction conditions.
+**The effect**: We can adjust coupling strengths with explicit safety margins and runtime checks.
 *See `docs/STABILITY_GUARANTEES.md`.*
 
-### C. Wormhole Couplings (Gate-Benefit)
-**Role**: Non-Local Credit Assignment / "Teleportation"  
+### C. Counterfactual gate-benefit coupling (CGBC)
+**Role**: Non-local credit assignment
 **The Problem**: In a gated system (like a logic gate or a mixture of experts), if a gate is closed (weight = 0), gradients vanish. The system cannot "see" that opening the gate would reduce energy downstream. This is the classic "vanishing gradient" problem in sparse structures.
-**The Solution**: We add a virtual energy term linking the *potential* downstream benefit directly to the gate control. This force is independent of the current gate state.
-**The Effect**: The "future" value pulls the gate open, even if the current path is blocked. This acts like a wormhole, tunneling through the high-energy barrier that would normally trap a local optimizer. It allows the system to make discrete, structural decisions (switching strategies) using continuous physics.
+**The Solution**: We add a counterfactual gate-benefit coupling, nicknamed a wormhole coupling, that links the *potential* downstream benefit directly to the gate control. This force is independent of the current gate state.
+**The effect**: A supplied downstream estimate can push gate updates even when the gate is currently closed.
 *See `docs/README_WORMHOLE.md`.*
 
-### D. Stiffness-Based Updates (GaBP Equivalence)
-**Role**: Fast Convergence / "The Accelerator"  
+### D. Stiffness-based updates (GaBP equivalence)
+**Role**: Fast Convergence / "The Accelerator"
 **The Problem**: First-order gradient descent is slow in narrow valleys (poor conditioning). Second-order methods (Newton's method) fix this but are computationally prohibitive (O(N³)) for large systems.
 **The Solution**: We exploit the algebraic equivalence between **Gaussian Belief Propagation (GaBP)** and **Jacobi/Gauss-Seidel** linear solvers.
-**The Effect**: By tracking diagonal precision (stiffness), we approximate the Hessian diagonal. This gives us **Newton-like speed** for quadratic sub-problems using only fast, vectorized O(N) updates. We don't need explicit message passing objects; the stiffness-scaled gradient *is* the message passing update.
+**The effect**: By tracking diagonal precision, we approximate Hessian diagonals and speed up quadratic sub-problem updates using vectorized operations.
 *See `docs/README_GABP_EQUIVALENCE.md`.*
 
 ---
 
-## 3. The Synergy: Why It Works
+## 3. The synergy: why it works
 
 On their own, these methods have limitations:
 - **PSON** is just noise; it doesn't guide you to the goal.
 - **Small-Gain** restricts expressivity; it keeps you safe but doesn't solve the problem.
-- **Wormholes** are heuristic forces; they can pull you in wrong directions if unchecked.
+- **CGBC/wormhole terms** are heuristic forces; they can pull gates in wrong directions if the benefit estimate is wrong.
 - **GaBP** only solves quadratics exactly; it fails on non-convex gates.
 
-**Combined, they transform the system:**
-1.  **Wormholes** create the necessary global gradients to open new paths (solving the "discrete search" problem).
+**Combined, they provide:**
+1.  **CGBC/wormhole terms** create the necessary global gradients to open new paths (solving the "discrete search" problem).
 2.  **GaBP/Stiffness** rapidly solves the resulting flow problems once paths are open (solving the "slow convergence" problem).
-3.  **Small-Gain** ensures this aggressive reconfiguration never explodes, even when Wormholes exert strong forces.
-4.  **PSON** ensures we don't get stuck in shallow, spurious minima while the landscape shifts, keeping the system "warm" enough to settle into the global best configuration.
+3.  **Small-Gain** keeps updates within conservative stability bounds during reconfiguration.
+4.  **PSON** reduces stall risk in shallow minima while updates continue.
 
-The result is a system that acts qualitatively differently from a standard optimizer. It feels "alive"—gates pop open based on distant needs, the system settles instantly into new configurations, and it resists destabilization.
-
----
-
-## 4. Inverse Kinematics and Homotopy
-
-This "moving landscape" philosophy extends to broader control problems found in our main `complexity-from-constraints` repository:
-
--   **Inverse Kinematics**: Instead of solving for joint angles directly (which is hard), we define energy constraints on end-effectors. The "landscape" *is* the robot's kinematic chain. By relaxing the system, the robot "falls" into the correct pose.
--   **Homotopy (Continuation)**: We slowly introduce complex constraints (barriers) into the landscape. By starting with a convex, easy problem and morphing it into the hard one, the agent "surfs" the minimum as it moves. This prevents getting trapped in deep local minima early on.
-
-While this demo repo focuses on the core coordination mechanism, these advanced landscape-moving techniques are natural extensions of the same Entity-First, Energy-Based principles.
+The result is a system that can change coupling structure, preserve safety guards, and continue optimization under mixed dynamics.
 
 ---
 
-## 5. Speed and Equivalences
+## 4. Inverse kinematics and homotopy
+
+This objective-shaping philosophy extends to broader control problems in `complexity-from-constraints`:
+
+- **Inverse kinematics**: Instead of solving for joint angles directly, we define energy constraints on end-effectors. In this formulation, relaxation over the kinematic chain drives the system toward a feasible pose.
+- **Homotopy (continuation)**: We slowly introduce complex constraints into the objective. Starting from an easier objective and morphing toward the harder one reduces early trapping in poor local minima.
+
+While this demo repository focuses on core coordination, these techniques follow the same entity-first, energy-based principles and share the same practical pattern: change the objective shape, keep updates bounded, and preserve observability.
+
+---
+
+## 5. Speed and equivalences
 
 A key design choice is **speed via equivalence**.
--   Implementing full Newton steps is slow. Implementing GaBP with message objects is slow (in Python).
--   Implementing the *algebraic equivalent* (stiffness-scaled updates) allows us to use vectorized NumPy kernels.
--   Small-Gain checks are O(N) local sums, not O(N³) eigenvalue decompositions.
+- Implementing full Newton steps is slow. Implementing GaBP with message objects is slow (in Python).
+- Implementing the *algebraic equivalent* (stiffness-scaled updates) allows us to use vectorized NumPy kernels.
+- Small-Gain checks are O(N) local sums, not O(N³) eigenvalue decompositions.
 
-By choosing techniques that have fast, local equivalents, we build a system that *reasons* globally (via wormholes and stiffness propagation) but *computes* locally and rapidly.
+By choosing techniques that have fast, local equivalents, we build a system that uses global signals (via CGBC/wormhole terms and stiffness propagation) while computing locally and rapidly.
 
 ---
 
 ## Summary
 
 We don't just execute Gradient Descent. We:
-1.  **Shape** the manifold (Wormholes, Small-Gain).
+1.  **Shape** the manifold (CGBC/wormhole terms, Small-Gain).
 2.  **Accelerate** the flow (Stiffness/GaBP).
 3.  **Shake** the state (PSON).
 
-This is **Moving the Landscape**.
+This is the objective-shaping strategy used by this repository.

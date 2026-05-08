@@ -1,11 +1,11 @@
-# Stiffness-Based Updates and Precision Layer
+# Stiffness-based updates and precision layer
 
-Status: Production-ready (enabled via `use_stiffness_updates=True`)  
+Status: available in this repository (enabled via `use_stiffness_updates=True`)
 Scope: Per-coordinate Newton/Jacobi-style updates, curvature aggregation, and precision scaling.
 
 ---
 
-## 1. Core Concept
+## 1. Core concept
 
 Instead of gradient descent with a heuristic learning rate (`η ← η - α·∇F`), we perform per-coordinate updates based on local stiffness (curvature):
 
@@ -22,7 +22,7 @@ This corresponds to:
 
 ---
 
-## 2. Curvature Aggregation
+## 2. Curvature aggregation
 
 The coordinator aggregates positive diagonal curvature from two sources:
 
@@ -41,7 +41,7 @@ This aggregation happens automatically in `_update_precision_cache()`.
 
 ---
 
-## 3. Why It Matters
+## 3. Why it matters
 
 1.  **Auto-Tuning Step Size**: The step \(\Delta \eta \approx \text{Force} / \text{Stiffness}\). Stiff variables take small, precise steps; slack variables take large steps to find equilibrium. No manual learning rate tuning required for well-modeled problems.
 2.  **Geometry-Aware PSON**: Precision-Scaled Orthogonal Noise uses this same \(\Lambda\) to scale exploration noise (\(\xi \propto \Lambda^{-1/2}\)), focusing search on flat directions.
@@ -66,11 +66,11 @@ coord = EnergyCoordinator(
 ### Compatibility
 - **Small-Gain**: Still protects stability by capping coupling weights or global step size if off-diagonal interactions are too strong.
 - **Adapters**: Weight adapters (SmallGain, GradNorm) still work by scaling the effective force and stiffness terms.
-- **Wormholes**: Wormhole forces (linear) are divided by the node's total stiffness, ensuring non-local signals respect local constraints.
+- **CGBC/wormhole terms**: CGBC forces are linear and divided by the node's total stiffness, ensuring non-local signals respect local constraints.
 
 ---
 
-## 5. Implementation Details
+## 5. Implementation details
 
 - **Precision Cache**: `_precision_cache` stores \(\Lambda_{ii}\) values, updated before each relaxation pass.
 - **Update Kernel**: When `use_stiffness_updates=True`, the gradient descent kernel divides the gradient by `max(stiffness, eps)`.
@@ -83,5 +83,5 @@ coord = EnergyCoordinator(
 See `tests/test_stiffness_updates.py` for:
 - Exact convergence on quadratic problems in 1 step.
 - Equivalence to preconditioned gradient descent.
-- Verification that wormhole (linear) forces are preserved.
+- Verification that CGBC/wormhole linear forces are preserved.
 

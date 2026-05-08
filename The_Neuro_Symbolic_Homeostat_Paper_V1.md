@@ -1,14 +1,14 @@
 # Complexity from Constraints: The Neuro‑Symbolic Homeostat
 ## Fast Matrix–Message Relaxation with Precision‑Scaled Orthogonal Noise and Stability Projection
 
-**Authors:** Oscar Goldman, Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業  
-**Date:** November 2025  
-**Status:** Draft with working code and demos
-[![CC BY 4.0][cc-by-shield]][cc-by]
+**Authors:** Oscar Goldman, Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業
+**Date:** November 2025
+**Status:** V1 with working code and demos
+[CC BY 4.0]
 
 ### Abstract
 
-We present a neuro‑symbolic coordination framework that treats logic as physics and inference as relaxation. The system composes typed modules with explicit energy terms (locals and couplings) and regulates them with three orthogonal mechanisms: (i) Precision‑Scaled Orthogonal Noise (PSON) that explores the null‑space of uncertainty without breaking energy monotonicity, (ii) a Stability Projector (Small‑Gain allocator) that enforces contraction via Gershgorin‑style bounds, and (iii) Wormhole couplings that provide non‑local credit assignment akin to Equilibrium Propagation nudges. For quadratic/Gaussian sub‑problems we exploit a tight equivalence between Gaussian Belief Propagation (GaBP) and classical linear iterations (Jacobi/Gauss–Seidel), showing that message passing and (preconditioned) gradient descent become the same computation under standard conditions (SPD precision, appropriate scheduling). The result is a fast, modular “System‑2” layer that corrects hallucinations of fast “System‑1” models using thermodynamically grounded self‑regulation, with production‑grade implementation, observability, and stability guarantees.
+We present a neuro‑symbolic coordination framework that treats logic as physics and inference as relaxation. The system composes typed modules with explicit energy terms (locals and couplings) and regulates them with three orthogonal mechanisms: (i) Precision‑Scaled Orthogonal Noise (PSON) that explores the null space of uncertainty without breaking energy monotonicity, (ii) a Stability Projector (Small‑Gain allocator) that applies Gershgorin-style conservative bounds, and (iii) counterfactual gate-benefit couplings (CGBCs), nicknamed wormhole couplings in the code, that provide non-local gate updates from caller-supplied benefit estimates. For quadratic and Gaussian sub-problems we exploit an equivalence between Gaussian Belief Propagation (GaBP) and classical linear iterations (Jacobi and Gauss-Seidel), showing that message passing and preconditioned gradient descent become the same computation under standard conditions (SPD precision and appropriate scheduling). The result is a modular System-2 layer with observability and conservative stability controls in the tested synthetic regimes.
 
 ---
 
@@ -47,8 +47,8 @@ Proposition (Quadratic PSON safety). Let $F(x) = \tfrac12 (x-x^\star)^\top H (x-
 $\Delta F \;=\; F(x+\beta\delta) - F(x) \;=\; \tfrac12 \beta^2 \delta^\top H \delta \;\ge\; 0.$
 Thus, monotone descent is preserved under a down‑only acceptance rule or for sufficiently small $\beta$ relative to curvature. Precision scaling ($\Lambda^{-1}$) biases $\delta$ toward low‑curvature directions, reducing $\delta^\top H \delta$.
 
-### 2.3 Wormhole Effect (Non‑Local Gradient Teleportation)
-Closed gates receive forces proportional to downstream potential benefit. With gate–benefit energy
+### 2.3 Counterfactual gate-benefit coupling (CGBC)
+Counterfactual gate-benefit coupling (CGBC), nicknamed a wormhole coupling in the implementation, lets closed gates receive forces proportional to downstream potential benefit. With gate-benefit energy
 
 $$
 F_{\text{gate}} = -w\, \eta_{\text{gate}}\, \Delta_{\text{benefit}},
@@ -62,7 +62,7 @@ $$
 $$
 
 (Eq. 3)
-This provides a non‑local correction akin to the “nudge” in Equilibrium Propagation—enabling credit assignment without backprop through inactive paths.
+This provides a non-local correction akin to the “nudge” in Equilibrium Propagation, enabling credit assignment without backprop through inactive paths.
 
 Explicit sign check. From (Eq. 3), $\mathrm{sign}\big(\partial F/\partial \eta_{\text{gate}}\big) = -\,\mathrm{sign}(\Delta_{\text{benefit}})$. Thus when downstream benefit is positive, the gradient pushes the gate upward (reducing energy), irrespective of the current $\eta_{\text{gate}}$; conversely for negative benefit.
 
@@ -80,7 +80,7 @@ $$
 $$
 
 (Eq. 4)
-with SPD precision matrix $J$. 
+with SPD precision matrix $J$.
 
 We denote $D = \mathrm{diag}(J)$ and write $J = D + L + U$ with $L$ strictly lower‑ and $U$ strictly upper‑triangular parts. Solving $Jx = h$ via iterative methods yields the following equivalences:
 
@@ -96,7 +96,7 @@ Scope and realization. We scope GaBP claims strictly to SPD/quadratic blocks and
 ## 4. Architecture & Mechanisms
 
 ### 4.1 Modules, Energies, and Precision
-Modules expose order parameters and implement local energies. Couplings encode interactions (springs, hinges, wormholes). A `SupportsPrecision` interface elevates curvature (precision) to a first‑class signal. The coordinator aggregates a diagonal precision vector $\Lambda$ from module curvature and coupling curvature (quadratic and active hinges) and, when enabled (`use_stiffness_updates`), applies per‑coordinate updates $\Delta \eta_i = -(\partial F/\partial \eta_i)/(\Lambda_{ii}+\varepsilon)$. This same $\Lambda$ modulates PSON to emphasize exploration along flat directions. Vectorized graph caches avoid Python overhead.
+Modules expose order parameters and implement local energies. Couplings encode interactions (springs, hinges, and CGBC/wormhole terms). A `SupportsPrecision` interface elevates curvature (precision) to a first‑class signal. The coordinator aggregates a diagonal precision vector $\Lambda$ from module curvature and coupling curvature (quadratic and active hinges) and, when enabled (`use_stiffness_updates`), applies per‑coordinate updates $\Delta \eta_i = -(\partial F/\partial \eta_i)/(\Lambda_{ii}+\varepsilon)$. This same $\Lambda$ modulates PSON to emphasize exploration along flat directions. Vectorized graph caches avoid Python overhead.
 
 ### 4.2 Stability Projector (Small‑Gain Allocator)
 The Small‑Gain allocator enforces contraction by budgeting Gershgorin‑estimated Lipschitz margins. In strictly Gaussian sub‑problems it acts as a stability projector/monitor (down‑only scaling to keep $\rho(J) < 1$); in mixed regimes (gates/hinges) it remains a conservative allocator. Observability records global and per‑row margins and spend, aligning control‑theory guarantees with practical tuning.
@@ -121,8 +121,8 @@ Update $a_{ij} \leftarrow s_i\, a_{ij}$ for $j\neq i$ while keeping $a_{ii}$ fix
 
 Guarantee (linear/SPD case). If $A$ is SPD and (Eq. 6) holds for all rows with $\varepsilon>0$, then all Gershgorin discs lie strictly in the right half‑plane and the induced iteration matrix has spectral radius $< 1$ under standard Jacobi/GS splittings; thus the iteration is contractive. In mixed regimes, the projector remains a conservative guard.
 
-### 4.3 Wormhole Couplings
-`GateBenefitCoupling` injects non‑local gradients even for closed connections, solving the zero‑gradient deadlock in sparse topologies. Damped variants provide smoother activation curves. This mechanism generalizes across planning, sequence, and gating tasks as the core “Redemption” pattern (future context corrects earlier decisions).
+### 4.3 Counterfactual gate-benefit couplings (CGBCs)
+`GateBenefitCoupling` implements CGBC, with “wormhole coupling” retained as the implementation nickname. It injects non-local gradients even for closed connections, solving the zero-gradient deadlock in sparse topologies when the caller supplies a downstream benefit estimate. Damped variants provide smoother activation curves. This mechanism generalizes across planning, sequence, and gating tasks as the core “Redemption” pattern, where later context can correct earlier provisional decisions.
 
 ### 4.4 Precision‑Scaled Orthogonal Noise (PSON)
 Null‑space exploration without monotonicity violations. Precision‑aware scaling makes slack variables shoulder exploration while stiff variables take safer, smaller steps. This stabilizes near convergence and accelerates escape from spurious minima.
@@ -138,7 +138,7 @@ We retain Dynamic Gradient‑Based Energy Minimization as the default inner solv
 Augmented kernels:
 - Quadratic/Gaussian blocks: GaBP‑style updates (Jacobi/GS schedule) = precision‑weighted linear solves with per‑iteration cost $O(\mathrm{nnz}(J))$; no global factorization required.
 - Non‑Gaussian/gated/hinge terms: gradient with line search, proximal updates, or ADMM blocks (production‑ready) with acceptance guards.
-- Mixed graphs: hybrid passes—GaBP on quadratic stars, prox/gradient on others—under a common stability projector.
+- Mixed graphs: hybrid passes, with GaBP on quadratic stars and prox or gradient on other blocks, under a common stability projector.
 
 **Pseudocode Sketch (Conceptual):**
 
@@ -172,7 +172,7 @@ We ship relaxation trackers and stability telemetry: per‑step ΔF, acceptance 
 - Orthogonal vs isotropic noise: compare ΔF histograms and sharpness at matched loss.
 - Precision‑aware vs uniform noise scaling: escape events, ΔF90, final energy.
 - Small‑Gain vs line‑search‑only vs GradNorm: ΔF90, backtracks, final energy on dense graphs.
-- Wormhole ablation: activation/opening rates vs energy drop versus hinge/quadratic baselines.
+- CGBC/wormhole ablation: activation/opening rates vs energy drop versus hinge/quadratic baselines.
 
 **Table 1: Ablation Summary (Synthetic Quadratic & Mixed Tasks)**
 *(Placeholder: To be populated with ΔF90, acceptance rate, and final energy for Isotropic vs Orthogonal vs PSON modes across random SPD and sparse-gate topologies.)*
@@ -182,7 +182,7 @@ Note on gaps (tracked): a dedicated script for “PSON vs isotropic vs precision
 **Reproducibility Commands (Windows PowerShell):**
 
 ```powershell
-# Wormhole demo
+# CGBC/wormhole demo
 uv run python -m experiments.demo_wormhole
 
 # Unit tests (subset)
@@ -208,10 +208,10 @@ Note: To enable stiffness‑based per‑coordinate updates in your own scripts, 
 
 ## 9. Limitations
 
-- GaBP equivalence applies to Gaussian/quadratic sub‑problems with SPD precision; mixed regimes require hybrid updates and guards.  
-- Walk‑summability/diagonal‑dominance violations can stall/oscillate; Small‑Gain projection mitigates but cannot fix poor modeling.  
-- Precision tracking uses diagonal approximations by default; full metrics require SPD and careful conditioning.  
-- Wormhole benefit estimation quality affects activation dynamics; use conservative estimates with monotone acceptance.
+- GaBP equivalence applies to Gaussian/quadratic sub‑problems with SPD precision; mixed regimes require hybrid updates and guards.
+- Walk‑summability/diagonal‑dominance violations can stall/oscillate; Small‑Gain projection mitigates but cannot fix poor modeling.
+- Precision tracking uses diagonal approximations by default; full metrics require SPD and careful conditioning.
+- CGBC benefit estimation quality affects activation dynamics; use conservative estimates with monotone acceptance.
 
 ---
 
@@ -228,7 +228,7 @@ Walk‑summability vs diagonal dominance. Following Malioutov et al., walk‑s
 
 ## 11. Conclusion
 
-By unifying precision‑aware null‑space exploration (PSON), stability projection (Small‑Gain), non‑local correction (Wormhole), and stiffness‑based per‑coordinate updates, the Homeostat delivers a fast, controllable, and observable “System‑2” layer for neuro‑symbolic systems. In Gaussian regions, message passing and precision‑scaled iterations (Jacobi/GS) collapse to the same sparse matrix update, reducing tuning to stability budgeting; in mixed regimes, proximal and ADMM updates preserve efficiency and guarantees. The resulting architecture is both special and fast: matrix‑math heavy inner loops, explicit stability mechanisms, and non‑local credit assignment—all in a modular, typed stack.
+By combining precision-aware null-space exploration (PSON), stability projection (Small-Gain), counterfactual gate-benefit coupling (CGBC), and stiffness-based per-coordinate updates, the Homeostat provides a modular System-2 layer for neuro-symbolic systems. In Gaussian regions, message passing and precision-scaled iterations (Jacobi and GS) reduce to the same sparse matrix update, which simplifies tuning around stability budgets. In mixed regimes, proximal and ADMM updates remain available with guards and observability. This architecture uses matrix-heavy inner loops, explicit stability mechanisms, and typed components.
 
 ---
 
@@ -238,29 +238,23 @@ Great thanks for inspiration and interesting techniques in distributed computati
 
 Theory Refs:
 
-1. Weiss, Y., & Freeman, W. T. (2001). Correctness of Belief Propagation in Gaussian Graphical Models of Arbitrary Topology. Neural Computation.  
-2. Malioutov, D., Johnson, J. K., & Willsky, A. S. (2006). Walk‑sums and belief propagation in Gaussian graphical models. Journal of Machine Learning Research.  
-3. Saad, Y. (2003). Iterative Methods for Sparse Linear Systems. SIAM.  
-4. Scellier, B., & Bengio, Y. (2017). Equilibrium Propagation: Bridging the Gap Between Energy‑Based Models and Backpropagation. Frontiers in Neuroscience.  
-5. Zames, G. (1966). On the input‑output stability of time‑varying nonlinear feedback systems. IEEE TAC.  
-6. Vidyasagar, M. (1993). Nonlinear Systems Analysis. Prentice Hall.  
-7. Boyd, S., Parikh, N., Chu, E., Peleato, B., & Eckstein, J. (2011). Distributed Optimization and Statistical Learning via the Alternating Direction Method of Multipliers. Foundations and Trends in Machine Learning.  
+1. Weiss, Y., & Freeman, W. T. (2001). Correctness of Belief Propagation in Gaussian Graphical Models of Arbitrary Topology. Neural Computation.
+2. Malioutov, D., Johnson, J. K., & Willsky, A. S. (2006). Walk‑sums and belief propagation in Gaussian graphical models. Journal of Machine Learning Research.
+3. Saad, Y. (2003). Iterative Methods for Sparse Linear Systems. SIAM.
+4. Scellier, B., & Bengio, Y. (2017). Equilibrium Propagation: Bridging the Gap Between Energy‑Based Models and Backpropagation. Frontiers in Neuroscience.
+5. Zames, G. (1966). On the input‑output stability of time‑varying nonlinear feedback systems. IEEE TAC.
+6. Vidyasagar, M. (1993). Nonlinear Systems Analysis. Prentice Hall.
+7. Boyd, S., Parikh, N., Chu, E., Peleato, B., & Eckstein, J. (2011). Distributed Optimization and Statistical Learning via the Alternating Direction Method of Multipliers. Foundations and Trends in Machine Learning.
 
 ---
 
 ### Citation
 
-If you use this repository in your research, please cite it as below.
+If you use this repository in your research, please cite it. This is ongoing work; we would like to know your opinions and experiments. Thank you.
 
-```bibtex
-@software{complexity_from_constraints_homeostat_2025,
-  title        = {Complexity from Constraints: The Neuro‑Symbolic Homeostat},
-  author       = {Goldman, Oscar},
-  organization = {Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業},
-  year         = {2025},
-  note         = {Fast matrix–message relaxation with precision‑scaled orthogonal noise and stability projection}
-}
-```
+**Authors:** Oscar Goldman, Shogu Research Group @ Datamutant.ai (subsidiary of 温心重工業).
+
+**Reference (author-year format):** Goldman, O. (2025). *Complexity from Constraints: The Neuro-Symbolic Homeostat*. Software repository. Shogu Research Group @ Datamutant.ai (subsidiary of 温心重工業). Fast matrix-message relaxation with precision-scaled orthogonal noise and stability projection.
 
 ---
 
@@ -269,9 +263,9 @@ If you use this repository in your research, please cite it as below.
 This paper is licensed under the [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) license.
 
 - **You are free to**: share (copy and redistribute) and adapt (remix, transform, build upon) for any purpose, even commercially.
-- **Under the following terms**: attribution — give appropriate credit, provide a link to the license, and indicate if changes were made. No additional restrictions may be applied.
+- **Under the following terms**: attribution, give appropriate credit, provide a link to the license, and indicate if changes were made. No additional restrictions may be applied.
 
-© 2025 Oscar Goldman — Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業.
+© 2025 Oscar Goldman, Shogu Research Group @ Datamutant.ai subsidiary of 温心重工業.
 
 For the full legal text, see the [CC BY 4.0 legal code](https://creativecommons.org/licenses/by/4.0/legalcode).
 
@@ -279,7 +273,7 @@ For the full legal text, see the [CC BY 4.0 legal code](https://creativecommons.
 
 ### Notes on Implementation
 
-- Codebase: Python, protocol‑based architecture; hot‑swappable NumPy/Torch/JAX backends.  
-- Vectorization: Compile‑time graph vectorization cache to amortize sparse passes.  
-- Observability: Event‑driven telemetry (RelaxationTracker) for energy descent, stability margins, and adapter spend.  
+- Codebase: Python, protocol‑based architecture; hot‑swappable NumPy/Torch/JAX backends.
+- Vectorization: Compile‑time graph vectorization cache to amortize sparse passes.
+- Observability: Event‑driven telemetry (RelaxationTracker) for energy descent, stability margins, and adapter spend.
 - Precision Layer: Implemented; diagonal curvature aggregates module and coupling curvature; supports per‑coordinate stiffness‑based steps (`use_stiffness_updates`) and precision‑scaled PSON.

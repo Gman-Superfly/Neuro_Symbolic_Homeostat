@@ -1,11 +1,11 @@
-# Safe Defaults for EnergyCoordinator (Hands-off, paper-validation friendly)
+# Safe defaults for EnergyCoordinator (hands-off, paper-validation friendly)
 
-Status: Recommended starter config for reproducible, monotone relaxation in this repo.  
+Status: Recommended starter config for reproducible, monotone relaxation in this repo.
 Scope: Stability guard on, tangent noise with adaptive magnitude, precision-aware scaling, metric-aware projection optional.
 
 ---
 
-## Recommended Coordinator Configuration
+## Recommended coordinator configuration
 
 ```python
 from core.coordinator import EnergyCoordinator
@@ -50,10 +50,10 @@ Notes:
 
 ---
 
-## Quick Repro (Windows PowerShell)
+## Quick repro (Windows PowerShell)
 
 ```powershell
-# Wormhole demo
+# CGBC/wormhole demo
 python -m experiments.demo_wormhole
 
 # Metric-orthogonal projection demo
