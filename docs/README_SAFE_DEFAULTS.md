@@ -1,4 +1,4 @@
-# Safe defaults for EnergyCoordinator (hands-off, paper-validation friendly)
+# Conservative defaults for EnergyCoordinator (paper-validation friendly)
 
 Status: Recommended starter config for reproducible, monotone relaxation in this repo.
 Scope: Stability guard on, tangent noise with adaptive magnitude, precision-aware scaling, metric-aware projection optional.
@@ -24,7 +24,7 @@ coord = EnergyCoordinator(
 
     # Steps and scaling
     use_stiffness_updates=True,      # per-coordinate η update by diagonal curvature
-    auto_step_from_lipschitz=True,   # derive safe step size from local Lipschitz estimate
+    auto_step_from_lipschitz=True,   # derive capped step size from local Lipschitz estimate
 
     # Exploration (Precision-Scaled Orthogonal Noise, PSON)
     enable_orthogonal_noise=True,    # tangent-plane noise (does not fight descent)
@@ -66,9 +66,9 @@ python -m experiments.demo_operator_splitting
 ---
 
 ## Why these defaults?
-- Stability guard + line search ensures ΔF traces stay well-behaved.
+- Stability guard + line search help keep accepted ΔF traces well-behaved under the configured assumptions.
 - Stiffness updates approximate Newton-like scaling without requiring full Hessians.
-- PSON explores safely in the tangent plane; precision-aware scaling targets flat directions.
+- PSON explores in the tangent plane; precision-aware scaling targets flat directions.
 - Metric-aware projection (optional) respects problem geometry when an SPD metric is available.
 
 

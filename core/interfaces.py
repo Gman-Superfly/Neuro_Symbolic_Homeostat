@@ -13,6 +13,7 @@ __all__ = [
     "EnergyCoupling",
     "SupportsLocalEnergyGrad",
     "SupportsCouplingGrads",
+    "SupportsCouplingCurvature",
     "SupportsPrecision",
     "WeightAdapter",
 ]
@@ -65,6 +66,25 @@ class SupportsCouplingGrads(Protocol):
         eta_j: OrderParameter,
         constraints: Mapping[str, Any],
     ) -> Tuple[float, float]:
+        ...
+
+
+@runtime_checkable
+class SupportsCouplingCurvature(Protocol):
+    """Optional coupling interface exposing row-wise curvature bounds.
+
+    Returns:
+        A tuple `(diag_i, diag_j, off_ij)` where `diag_i` and `diag_j`
+        bound each endpoint's diagonal Hessian contribution, and `off_ij`
+        bounds the absolute off-diagonal Hessian contribution.
+    """
+
+    def coupling_curvature_bounds(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float, float]:
         ...
 
 

@@ -1,7 +1,7 @@
 # Bilinear Couplings in the Neuro‑Symbolic Homeostat
 
 Status: Design document (optional feature; not enabled by default, you will have to implement it)
-Intent: Explain what a bilinear coupling adds, its impact on stability/solver choices, and a safe path to implement behind a flag.
+Intent: Explain what a bilinear coupling adds, its impact on stability/solver choices, and a conservative path to implement behind a flag.
 
 ---
 
@@ -82,7 +82,7 @@ Our stiffness update uses \(\Delta \eta_i \approx -g_i / (\Lambda_{ii} + \vareps
 
 ### 4.2 Gauss–Seidel / 2×2 Local Block
 
-For variables i and j with diagonal curvatures \(a_i, a_j \ge 0\) (from locals/other convex terms) and a bilinear cross‑term \(w\), a local Newton step solves:
+For variables i and j with diagonal curvatures \(a_i, a_j \ge 0\) (from locals/other convex terms) and a bilinear cross‑term \(w\), a local Newton step solves the 2×2 system:
 
 \[
 \begin{bmatrix}
@@ -183,13 +183,13 @@ Integration points:
 1) Gradients: analytic vs finite‑difference on random η pairs and weights
 2) Gershgorin: row sum increases by |w| for both rows; diagonal unchanged
 3) Stability: with Small‑Gain on, ΔF ≤ 0 for a small graph with bilinear + locals
-4) Solver: GS/2×2 update converges faster/cleaner than Jacobi on the same graph
+4) Solver: Compare GS/2×2 update against Jacobi on the same graph
 5) PSON: noise energy contribution remains bounded; orthogonality preserved
 
 ---
 
 ## 10. Summary
 
-Adding a bilinear coupling introduces true off‑diagonal curvature that enables concise multiplicative interactions. It increases expressivity, but tightens stability/conditioning; safe deployment requires Small‑Gain budgeting, adequate diagonal curvature, and GS/2×2 local updates. Keep it behind a flag and validate with monotone acceptance and telemetry before wider use.
+Adding a bilinear coupling introduces true off‑diagonal curvature for concise multiplicative interactions. It increases expressivity, but tightens stability and conditioning. Use Small‑Gain budgeting, adequate diagonal curvature, and GS/2×2 local updates. Keep it behind a flag and validate with monotone acceptance and telemetry before wider use.
 
 

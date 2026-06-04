@@ -44,11 +44,11 @@ These controllers are metric‑agnostic; the geometry enters at the projection l
 1) Redundancy with projection
    Metric awareness that matters most, staying tangent to level sets, is already captured by M-orthogonal projection and re-projection after curvature weighting. A separate controller class would duplicate purpose without clear benefit for this repo’s scope.
 
-2) Minimal, stable API
+2) Compact API
    This repository emphasizes a compact path: stiffness-based updates, Small-Gain stability, and PSON with optional M-projection. Adding another controller increases surface area and cognitive load without improving core outcomes for included demos and tests.
 
-3) Telemetry and guarantees remain the same
-   Stability and acceptance are enforced by the same guards (monotone energy, Small‑Gain projection). Introducing an extra controller doesn’t strengthen these guarantees here.
+3) Telemetry and guard behavior remain the same
+   Stability and acceptance are handled by the same guards (monotone energy, Small‑Gain projection). Introducing an extra controller does not strengthen those scoped bounds here.
 
 ---
 
@@ -89,7 +89,7 @@ class MetricAwareNoiseController(OrthogonalNoiseController):
 
 ## Bottom line
 
-- This repo: M-orthogonal projection gives the geometric behavior we need; existing controllers handle magnitude robustly. A separate `MetricAwareNoiseController` would add complexity without material benefit here.
+- This repo: M-orthogonal projection gives the geometric behavior used by the current demos and tests; existing controllers handle magnitude scheduling. A separate `MetricAwareNoiseController` would add complexity without a tested benefit here.
 - Main repo: If you rely on a principled metric and want the noise policy to adapt to it directly, keep or use the metric-aware controller there.
 
 

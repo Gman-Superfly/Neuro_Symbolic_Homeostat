@@ -32,7 +32,7 @@ Precision‑aware option:
 Metric‑aware note:
 - If a metric M is provided (`metric_matrix` or `metric_vector_product`) and `metric_aware_noise_controller=True`, the projection uses M‑orthogonal geometry. The controller still only sets magnitude; the projection governs direction.
 
-Recommended combo (hands‑off, safe exploration):
+Recommended combo (automatic magnitude and capped step):
 
 ```python
 coord = EnergyCoordinator(
@@ -56,17 +56,17 @@ Observability:
 ## 2) Auto Step From Lipschitz
 
 Flags: `stability_guard=True`, `auto_step_from_lipschitz=True`
-Bound: safe step ≤ stability_cap_fraction · (2 / L)
+Bound: capped step ≤ stability_cap_fraction · (2 / L)
 
 What it does:
-- With `stability_guard=True`, we estimate a conservative Lipschitz bound L (Gershgorin‑style) and always cap the step:
+- With `stability_guard=True`, we estimate a conservative Lipschitz bound L (Gershgorin‑style) and cap each step:
   `step_to_use = min(step_size, stability_cap_fraction * (2/L))`.
 - With `auto_step_from_lipschitz=True`, we set the step to the cap directly:
   `step_to_use = stability_cap_fraction * (2/L)` (hands‑free step size).
 
 Why it’s useful:
-- Consistent with Small‑Gain/stability budgeting; removes manual step tuning.
-- Keeps iterations contractive even as coupling weights change.
+- Consistent with Small‑Gain/stability budgeting; reduces manual step tuning.
+- Keeps iterations inside the contraction condition when the estimated bound upper-bounds the local Lipschitz constant.
 
 Recommended setup:
 
@@ -74,7 +74,7 @@ Recommended setup:
 coord = EnergyCoordinator(
     ...,
     stability_guard=True,
-    stability_cap_fraction=0.9,     # ~90% of safe bound
+    stability_cap_fraction=0.9,     # ~90% of the conservative bound
     auto_step_from_lipschitz=True,  # choose bound as the step
 )
 ```
@@ -86,7 +86,7 @@ Compatibility:
 
 ## Quick recipes
 
-### A) Safe exploration + auto step
+### A) Tangent exploration + auto step
 ```python
 coord = EnergyCoordinator(
     ...,

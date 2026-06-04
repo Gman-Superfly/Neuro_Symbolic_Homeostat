@@ -1,7 +1,7 @@
 # Precision-scaled orthogonal noise (PSON): design and usage
 
 Status: available in this repository (metric-aware projection supported)
-Scope: What tangent (orthogonal) noise is, why it’s safer, how we implement and use it (with optional metric awareness), and how to validate it.
+Scope: What tangent (orthogonal) noise is, what it controls, how we implement and use it (with optional metric awareness), and how to validate it.
 
 ---
 
@@ -10,7 +10,7 @@ Scope: What tangent (orthogonal) noise is, why it’s safer, how we implement an
 Standard isotropic noise perturbs parameters in arbitrary directions, which can easily inject an uphill component against the gradient, causing non‑monotone steps and fragile acceptance logic.
 
 PSON instead injects noise in the tangent plane orthogonal to the gradient of the energy:
-- Safer exploration: first‑order energy change vanishes (noise does not “fight” descent).
+- First-order neutral perturbation: first‑order energy change vanishes (noise does not “fight” descent).
 - Targeted search: exploration is directed into flat or uncertain directions (null‑space).
 - Curvature‑aware: we scale noise inversely with diagonal curvature so slack variables explore more, stiff variables less.
 
@@ -43,7 +43,7 @@ Let \(\Lambda\) be the diagonal curvature (precision) aggregated from modules an
 
 ---
 
-## 3. Safety and guarantees (intuition)
+## 3. Energy effect and guards (intuition)
 
 Let the energy be \(F\), current point \(x\), gradient \(g = \nabla F(x)\), and injected orthogonal noise \(\delta\) with \(g^\top \delta = 0\). A second‑order Taylor approximation gives:
 
@@ -51,7 +51,7 @@ Let the energy be \(F\), current point \(x\), gradient \(g = \nabla F(x)\), and 
 F(x + \delta) \approx F(x) + \tfrac{1}{2}\delta^\top H \delta \,,
 \]
 
-so first‑order increase vanishes. With (i) down‑only acceptance guard, (ii) Small‑Gain projection limiting loop gains, and (iii) small curvature‑aware magnitude, the chance of harmful increases is reduced and systematically bounded.
+so the first‑order increase vanishes. Second-order terms can still increase energy. The implementation manages this with (i) down‑only acceptance, (ii) Small‑Gain projection limiting loop gains, and (iii) small curvature‑aware magnitude.
 
 In practice we keep:
 - Monotone acceptance: reject steps with \( \Delta F > 0 \) (or use the free‑energy guard, if enabled).
@@ -134,7 +134,7 @@ Run:
 uv run python -m experiments.demo_metric_orthogonal
 ```
 
-This prints Euclidean and metric‑orthogonal dot‑products (≈ 0) and runs a short relaxation with M‑orthogonal noise enabled, showing a clean energy drop and a stable final state.
+This prints Euclidean and metric‑orthogonal dot‑products (≈ 0) and runs a short relaxation with M‑orthogonal noise enabled.
 
 ### 6.2 Stability and acceptance
 Our test suite exercises precision‑aware weighting and Small‑Gain stability. For broader stability guidance and proofs, see:
@@ -147,7 +147,7 @@ Our test suite exercises precision‑aware weighting and Small‑Gain stability.
 ## 7. Design notes and trade-offs
 
 - We keep metric awareness in the projection step (direction) rather than in a dedicated metric‑aware magnitude controller. This simplifies the API while retaining the key geometric property (orthogonality). See `docs/README_METRIC_AWARE_NOISE.md` for rationale.
-- Precision scaling is diagonal by design for speed and simplicity; it is a robust default in mixed regimes and pairs well with Small‑Gain. Full metric‑curvature allocations (dense) are possible but typically unnecessary.
+- Precision scaling is diagonal by design for lower overhead and simpler composition; it pairs with Small‑Gain in the tested mixed regimes. Full metric‑curvature allocations (dense) are possible when the extra cost is justified.
 
 ---
 
@@ -157,10 +157,10 @@ Our test suite exercises precision‑aware weighting and Small‑Gain stability.
 A: First‑order contribution is zero by construction. Second‑order effects can increase energy if noise is too large in stiff directions. We mitigate this with precision scaling, Small‑Gain, and monotone acceptance.
 
 **Q: Why re‑project after precision re‑weighting?**
-A: The re‑weighting alters direction; re‑projecting ensures the final noise remains orthogonal (Euclidean or M‑orthogonal).
+A: The re‑weighting alters direction; re‑projecting restores orthogonality (Euclidean or M‑orthogonal).
 
 **Q: When should I use the metric‑aware variant?**
-A: When you have a meaningful SPD metric (e.g., Fisher/Gauss‑Newton) and want exploration aligned with that geometry. Otherwise, Euclidean projection is fine (and faster).
+A: When you have a meaningful SPD metric (e.g., Fisher/Gauss‑Newton) and want exploration aligned with that geometry. Otherwise, Euclidean projection is simpler and has lower overhead.
 
 ---
 
@@ -181,6 +181,6 @@ coord = EnergyCoordinator(
 coord.metric_matrix = np.diag([1.0, 10.0])
 ```
 
-Run your relaxation and monitor ΔF and contraction margins; you should see safe exploration with clean acceptance behavior.
+Run your relaxation and monitor ΔF and contraction margins; accepted steps should remain consistent with the configured guards.
 
 

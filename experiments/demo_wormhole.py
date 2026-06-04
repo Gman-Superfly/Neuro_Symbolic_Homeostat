@@ -1,8 +1,8 @@
-"""Demonstrate the Wormhole Effect (Non-Local Gradient Teleportation).
+"""Demonstrate counterfactual gate-benefit coupling.
 
 This script shows how GateBenefitCoupling creates a gradient force
-on a closed gate (η=0) based on POTENTIAL benefit, enabling escape
-from local minima that would trap standard physics-based approaches.
+on a closed gate (η=0) from a caller-supplied benefit estimate.
+The benefit value is hard-coded here to isolate the gradient property.
 """
 
 from __future__ import annotations
@@ -13,11 +13,13 @@ from modules.gating.energy_gating import EnergyGatingModule
 
 
 def demo_wormhole_effect() -> None:
-    """Show how closed gates (η=0) still feel gradient from potential benefit."""
+    """Show how closed gates (η=0) receive gradients from supplied benefit."""
     
     print("=" * 70)
-    print("WORMHOLE EFFECT DEMONSTRATION")
+    print("CGBC DEMONSTRATION (WORMHOLE NICKNAME)")
     print("=" * 70)
+    print("This demo hard-codes delta_benefit to isolate the gradient property.")
+    print("It does not show the system discovering the benefit estimate.")
     print()
     
     # Create two modules: a domain module and a gate module
@@ -69,7 +71,7 @@ def demo_wormhole_effect() -> None:
     grad_standard_0 = (E_perturb - E0_standard) / eps
     
     print(f"Gradient on gate (eta=0): {grad_standard_0:.6f}")
-    print(f"  -> Force is SMALL and LOCAL (only sees current mismatch)")
+    print("  -> Force is small and local (only sees current mismatch)")
     print()
     
     # Relax
@@ -79,22 +81,23 @@ def demo_wormhole_effect() -> None:
     print(f"After 30 steps: eta_gate={etas_standard_final[0]:.3f}, eta_domain={etas_standard_final[1]:.3f}")
     print(f"Final Energy: {E_final_standard:.6f}")
     print(f"Energy Drop: {E0_standard - E_final_standard:.6f}")
-    print(f"  -> Gate opens SLOWLY, no knowledge of potential benefit")
+    print("  -> Gate opens slowly, with no supplied downstream benefit signal")
     print()
     print()
     
-    # Scenario 2: WITH Wormhole (GateBenefitCoupling)
-    print("SCENARIO 2: GateBenefitCoupling (WITH Wormhole)")
+    # Scenario 2: WITH CGBC (GateBenefitCoupling)
+    print("SCENARIO 2: GateBenefitCoupling (CGBC, wormhole nickname)")
     print("-" * 70)
     
-    # Simulate a potential benefit: if gate opens, domain improves by Delta_eta
+    # Caller-supplied benefit estimate for this demo. A real system would compute
+    # this value from an estimator, rollout, downstream loss difference, or supervision.
     potential_benefit = 0.3  # opening gate would improve domain by 0.3
     
     coord_wormhole = EnergyCoordinator(
         modules=[gate_mod, domain_mod],
         couplings=[
             (0, 1, QuadraticCoupling(weight=0.5)),  # weaker standard coupling
-            (0, 1, GateBenefitCoupling(weight=2.0, delta_key="delta_benefit")),  # WORMHOLE!
+            (0, 1, GateBenefitCoupling(weight=2.0, delta_key="delta_benefit")),  # CGBC
         ],
         constraints={"delta_benefit": potential_benefit},
         step_size=0.05,
@@ -111,7 +114,7 @@ def demo_wormhole_effect() -> None:
     # Start with SAME initial state: gate CLOSED
     etas_wormhole = [0.0, 0.5]  # gate=0 (closed), domain=0.5
     print(f"Initial: eta_gate={etas_wormhole[0]:.3f}, eta_domain={etas_wormhole[1]:.3f}")
-    print(f"Potential Benefit (Delta_eta_domain if gate opens): {potential_benefit:.3f}")
+    print(f"Caller-supplied delta_benefit: {potential_benefit:.3f}")
     
     E0_wormhole = coord_wormhole.energy(etas_wormhole)
     print(f"Initial Energy: {E0_wormhole:.6f}")
@@ -122,7 +125,7 @@ def demo_wormhole_effect() -> None:
     grad_wormhole_0 = (E_perturb_w - E0_wormhole) / eps
     
     print(f"Gradient on gate (eta=0): {grad_wormhole_0:.6f}")
-    print(f"  -> Force is STRONG and NON-LOCAL (feels future benefit!)")
+    print("  -> Force is non-local because it comes from the supplied benefit estimate")
     print(f"  -> Gradient magnitude ratio: {abs(grad_wormhole_0 / max(abs(grad_standard_0), 1e-9)):.1f}x stronger")
     print()
     
@@ -133,23 +136,23 @@ def demo_wormhole_effect() -> None:
     print(f"After 30 steps: eta_gate={etas_wormhole_final[0]:.3f}, eta_domain={etas_wormhole_final[1]:.3f}")
     print(f"Final Energy: {E_final_wormhole:.6f}")
     print(f"Energy Drop: {E0_wormhole - E_final_wormhole:.6f}")
-    print(f"  -> Gate opens FAST, pulled by potential benefit (wormhole!)")
+    print("  -> Gate opens faster because the supplied benefit estimate is positive")
     print()
     print()
     
     # Summary
     print("=" * 70)
-    print("SUMMARY: The Wormhole Effect")
+    print("SUMMARY: CGBC gate-benefit effect")
     print("=" * 70)
-    print(f"Without Wormhole: Final eta_gate = {etas_standard_final[0]:.3f} (slow, local)")
-    print(f"With Wormhole:    Final eta_gate = {etas_wormhole_final[0]:.3f} (fast, non-local)")
+    print(f"Without CGBC: Final eta_gate = {etas_standard_final[0]:.3f} (local)")
+    print(f"With CGBC:    Final eta_gate = {etas_wormhole_final[0]:.3f} (uses supplied benefit)")
     print()
     print("KEY INSIGHT:")
-    print("  Standard coupling: gradient depends on CURRENT state (local)")
-    print("  Wormhole coupling: gradient depends on POTENTIAL benefit (non-local)")
+    print("  Standard coupling: gradient depends on current state")
+    print("  CGBC coupling: gradient depends on caller-supplied delta_benefit")
     print()
-    print("  The 'future' reaches back through the closed gate and pulls it open!")
-    print("  This is how the system escapes local minima without random noise.")
+    print("  The mechanism provides a gate gradient even when eta_gate = 0.")
+    print("  Benefit estimation remains the caller's responsibility.")
     print("=" * 70)
 
 

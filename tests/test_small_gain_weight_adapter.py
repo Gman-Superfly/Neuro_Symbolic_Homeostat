@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Dict
 
+import numpy as np
+
 from core.weight_adapters import SmallGainWeightAdapter
 from core.coordinator import EnergyCoordinator
 from core.couplings import QuadraticCoupling
@@ -78,5 +80,20 @@ def test_small_gain_keeps_monotone_energy_on_small_problem() -> None:
     # Run a few steps; assertion in coordinator ensures monotone acceptance
     etas0 = [0.2, 0.8]
     _ = coord.relax_etas(etas0, steps=20)
+
+
+def test_gershgorin_step_cap_contracts_spd_quadratic_iteration() -> None:
+    rng = np.random.default_rng(123)
+    for size in (3, 6, 10):
+        matrix = rng.normal(0.0, 0.2, size=(size, size))
+        hessian = matrix.T @ matrix + np.eye(size) * 0.5
+        lipschitz_bound = float(np.max(np.sum(np.abs(hessian), axis=1)))
+        assert lipschitz_bound > 0.0
+
+        alpha = 0.9 * (2.0 / lipschitz_bound)
+        iteration_matrix = np.eye(size) - alpha * hessian
+        spectral_radius = float(np.max(np.abs(np.linalg.eigvals(iteration_matrix))))
+
+        assert spectral_radius < 1.0
 
 

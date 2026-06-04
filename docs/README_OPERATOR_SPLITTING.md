@@ -7,7 +7,7 @@ Scope: Solving energy minimization via proximal operators instead of gradient st
 
 ## 1. Overview
 
-For energy terms that are non-smooth or have hard constraints (e.g., hinges, L1 norms, box constraints), gradient descent can be unstable or inaccurate. Proximal algorithms handle these by solving small implicit sub-problems exactly.
+In mature supervised-learning recipes, catastrophic gradient-descent instability is uncommon because many guardrails are already present. In custom energy systems with non-smooth terms, stiff constraints, coupled objectives, or feedback-like dynamics, step-size sensitivity becomes more central. Proximal algorithms address this by replacing some explicit gradient steps with small implicit sub-problems.
 
 The coordinator supports two modes:
 1.  **Proximal-Only** (`operator_splitting=True`): Iterative application of proximal operators.
@@ -17,8 +17,8 @@ The coordinator supports two modes:
 
 ## 2. Why use it?
 
-- **Exact Constraint Handling**: Proximal steps project exactly onto the constraint manifold (e.g., \(\eta \in [0,1]\), hinge satisfied).
-- **Stability**: Implicit steps are unconditionally stable for convex terms, allowing larger step sizes than explicit gradient descent.
+- **Constraint handling**: Proximal steps project onto the constraint set (e.g., \(\eta \in [0,1]\), hinge satisfied).
+- **Step-size sensitivity**: Implicit steps can tolerate larger steps for convex terms than explicit gradient descent in those regimes.
 - **Handling Non-Differentiable Terms**: L1 sparsity, sharp hinges, or discrete-like penalties work naturally without smoothing.
 
 ---

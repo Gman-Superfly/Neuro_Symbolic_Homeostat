@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Tuple, List
 
 import math
+import numpy as np
 
 from core.coordinator import EnergyCoordinator
 from core.interfaces import EnergyModule, OrderParameter, SupportsLocalEnergyGrad, SupportsPrecision
@@ -138,6 +139,52 @@ def test_stiffness_vs_preconditioning_equivalence_module_only() -> None:
     assert math.isclose(out_a[0], out_b[0], rel_tol=0, abs_tol=1e-12)
 
 
+def test_stiffness_updates_match_jacobi_trajectory_for_quadratic_system() -> None:
+    c0 = 2.0
+    c1 = 3.0
+    target0 = 0.7
+    target1 = 0.2
+    coupling_weight = 0.25
+    step_size = 0.4
+    steps = 4
+    x0 = np.array([0.3, 0.6], dtype=float)
+    mods = [
+        LocalQuadraticModule(target=target0, curvature_c=c0),
+        LocalQuadraticModule(target=target1, curvature_c=c1),
+    ]
+    coord = EnergyCoordinator(
+        modules=mods,
+        couplings=[(0, 1, QuadraticCoupling(weight=coupling_weight))],
+        constraints={},
+        use_analytic=True,
+        stability_guard=False,
+        enable_orthogonal_noise=False,
+        noise_mode="none",
+        use_stiffness_updates=True,
+        stiffness_epsilon=1e-12,
+        step_size=step_size,
+        assert_monotonic_energy=False,
+    )
+
+    out = np.asarray(coord.relax_etas([float(x0[0]), float(x0[1])], steps=steps), dtype=float)
+
+    hessian = np.array(
+        [
+            [c0 + 2.0 * coupling_weight, -2.0 * coupling_weight],
+            [-2.0 * coupling_weight, c1 + 2.0 * coupling_weight],
+        ],
+        dtype=float,
+    )
+    linear = np.array([c0 * target0, c1 * target1], dtype=float)
+    diag = np.diag(hessian)
+    reference = x0.copy()
+    for _ in range(steps):
+        grad = hessian @ reference - linear
+        reference = reference - step_size * (grad / diag)
+
+    assert np.allclose(out, reference, rtol=0.0, atol=1e-12)
+
+
 def test_wormhole_gradient_unchanged() -> None:
     # Ensure GateBenefit contributes as a linear force (no curvature), unaffected by stiffness mode
     mods = [FlatModule(), FlatModule()]
@@ -173,4 +220,28 @@ def test_wormhole_gradient_unchanged() -> None:
     # Expected -w*delta = -0.6
     assert math.isclose(gs, -0.6, rel_tol=0, abs_tol=1e-12)
     assert math.isclose(gg, -0.6, rel_tol=0, abs_tol=1e-12)
+
+
+def test_rejected_step_restores_previous_etas() -> None:
+    mods = [LocalQuadraticModule(target=0.4, curvature_c=1.0)]
+    coord = EnergyCoordinator(
+        modules=mods,
+        couplings=[],
+        constraints={},
+        use_analytic=True,
+        stability_guard=False,
+        enable_orthogonal_noise=False,
+        noise_mode="none",
+        step_size=3.0,
+        assert_monotonic_energy=False,
+    )
+    etas0 = [0.6]
+    initial_energy = _energy(coord, etas0)
+
+    etas1 = coord.relax_etas(list(etas0), steps=1)
+    final_energy = _energy(coord, etas1)
+
+    assert getattr(coord, "_rejected_steps") == 1
+    assert math.isclose(etas1[0], etas0[0], rel_tol=0.0, abs_tol=1e-12)
+    assert final_energy <= initial_energy + 1e-12
 

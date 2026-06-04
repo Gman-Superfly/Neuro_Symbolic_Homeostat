@@ -9,7 +9,7 @@
 
 ## What it is (one sentence)
 
-**Counterfactual gate-benefit coupling (CGBC)** is a mechanism where a caller-supplied benefit estimate creates gradient forces on currently inactive gates. The implementation and older docs use **wormhole coupling** as a nickname for CGBC.
+**Counterfactual gate-benefit coupling (CGBC)** applies a gate gradient proportional to a caller-supplied estimate of downstream benefit. The implementation and older docs use **wormhole coupling** as a nickname for CGBC.
 
 ---
 
@@ -28,7 +28,7 @@ Standard Energy-Based Model:
   Gate stays closed forever (LOCAL MINIMUM TRAP)
 ```
 
-**The fundamental question**: How do you learn to open a door if you've never walked through it?
+The basic question: how does a closed gate receive a learning signal when its current path carries no signal?
 
 In standard physics or neural networks:
 - If a connection is closed (weight = 0 or gate = 0), **no information flows**
@@ -39,7 +39,7 @@ In standard physics or neural networks:
 
 ## The solution: counterfactual gate gradient
 
-We use a special coupling type called `GateBenefitCoupling` that implements CGBC. It creates a **non-local gradient** based on **potential** benefit, not actual connection strength.
+We use a coupling type called `GateBenefitCoupling` that implements CGBC. It creates a non-local gate gradient from a benefit estimate that the caller provides through `constraints[delta_key]`. The mechanism does not discover the benefit by itself. The useful abstraction is that the benefit estimate becomes a typed energy term that participates in the same relaxation, stability guards, and telemetry as the other couplings.
 
 ### The mathematical trick
 
@@ -50,7 +50,7 @@ F = -w * η_gate * Δη_domain
 
 Where:
 - `η_gate` ∈ [0,1] is the gate activation (0 = closed, 1 = open)
-- `Δη_domain` is the **potential benefit** if the gate were to open
+- `Δη_domain` is the caller-supplied benefit estimate if the gate were to open
 - `w` is the coupling weight
 
 **Gradient with respect to gate**:
@@ -58,11 +58,24 @@ Where:
 dF/dη_gate = -w * Δη_domain  # NO η_gate IN THE GRADIENT!
 ```
 
-Key property: the gradient **does NOT depend on η_gate**.
+Key property: the gradient does not depend on `η_gate`.
 
 - Even when η_gate = 0 (completely closed)
-- The system still feels a force proportional to Δη_domain (the potential benefit)
+- The gate receives a force proportional to the supplied `Δη_domain`
 - This force acts even though the connection is closed, which motivates the wormhole nickname
+
+---
+
+## Where does Delta_benefit come from?
+
+CGBC requires a benefit estimate from outside the coupling. That estimate can come from several realistic sources:
+
+- A learned benefit estimator trained to predict downstream improvement.
+- A downstream loss differential, for example `loss_before - loss_after` from a cheap local rollout.
+- A planning rollout that estimates the value of opening a branch.
+- External supervision or a hand-written domain heuristic.
+
+The demo uses a hard-coded positive value to isolate the gradient property. That demo shows that a supplied positive benefit creates a descent force on a closed gate. It does not show internal benefit estimation.
 
 ---
 
@@ -92,8 +105,8 @@ Energy
   └──────────────────────────→ η_gate
          η=0         η=1
 
-The potential benefit in the right well creates a force
-that acts on η_gate=0 even though no active connection exists!
+A caller-supplied benefit estimate creates a force
+on η_gate=0 even though no active connection exists.
 ```
 
 ---
@@ -154,22 +167,22 @@ uv run python -m experiments.demo_wormhole
 **Scenario 1: without CGBC** (Standard Quadratic Coupling)
 - Initial gate: η = 0.000 (completely CLOSED)
 - After 30 steps: η = 0.112 (barely opens)
-- Final energy: +0.006 (mediocre)
-- Behavior: Gate opens SLOWLY, only "sees" local mismatch
+- Final energy: +0.006
+- Behavior: Gate opens slowly and only receives the local mismatch signal
 
 **Scenario 2: with CGBC** (`GateBenefitCoupling`, wormhole nickname)
 - Initial gate: η = 0.000 (same, completely CLOSED)
-- After 30 steps: η = 0.535 (WIDE OPEN, **4.8x more**)
-- Final energy: -0.199 (**33x better**)
-- Behavior: Gate opens faster when the provided benefit signal is positive.
+- After 30 steps: η = 0.535 (4.8x more open)
+- Final energy: -0.199
+- Behavior: Gate opens more over the same step budget when the supplied benefit signal is positive.
 
 | Metric | Without CGBC | With CGBC | Improvement |
 |--------|-----------------|---------------|-------------|
 | Final η_gate | 0.112 | 0.535 | **4.8x more open** |
-| Energy Drop | 0.332 | 0.411 | **24% better** |
-| Final Energy | +0.006 | **-0.199** | **33x better** |
+| Energy Drop | 0.332 | 0.411 | **24% larger in this run** |
+| Final Energy | +0.006 | **-0.199** | **lower in this run** |
 
-CGBC lets the gate receive a gradient signal even when it is closed.
+CGBC lets the gate receive a gradient signal from the supplied benefit estimate even when the gate is closed.
 
 ---
 
@@ -182,8 +195,8 @@ Traditional neural networks struggle with **sparse, structured reasoning** becau
 - They can't efficiently represent "potential but inactive" paths
 - They waste compute on unlikely branches
 
-**CGBC enables**:
-- **Sparse activation**, only open gates that matter
+**CGBC supports**:
+- **Sparse activation**, open gates when the supplied benefit estimate supports opening
 - **Non-local updates**, downstream estimates can influence gate opening
 - **Targeted exploration**, test hypothetical benefits without full execution
 - **Escape from some local traps**, when benefit estimates are informative
@@ -192,24 +205,24 @@ Traditional neural networks struggle with **sparse, structured reasoning** becau
 
 #### Code synthesis
 ```python
-# Traditional: Generate and test everything
+# Baseline: generate and test every candidate
 for candidate in all_possible_functions:  # expensive!
     if test_suite(candidate):
         return candidate
 
-# With CGBC: Potential benefit guides generation
+# With CGBC: supplied benefit estimates guide generation
 gate_benefits = {
     func: estimate_test_improvement(func)  # cheap lookahead
     for func in candidate_pool
 }
 # CGBC gradient pulls gates open only if benefit is high
 activated = [f for f in candidates if cgbc_grad(f) > threshold]
-# Now test only the promising ones!
+# Now test only selected candidates.
 ```
 
 #### Sequence processing
 ```python
-# Traditional: Process entire sequence
+# Baseline: process the whole sequence
 for token in long_sequence:
     output = process(token)  # all tokens treated equally
 
@@ -224,7 +237,7 @@ for token in long_sequence:
 
 #### Planning / search
 ```python
-# Traditional: Breadth-first or random
+# Baseline: breadth-first or random expansion
 def explore(state):
     for action in all_actions:  # explore everything
         new_state = apply(action, state)
@@ -247,24 +260,24 @@ def explore(state):
 CGBC is mathematically grounded in:
 
 ### 1. Small-Gain theorem (control theory)
-- **Zames 1966**: Non-local feedback stability
+- **Zames 1966**: feedback stability
 - Couplings create "feedback loops" across the system
 - CGBC allows beneficial loops even when paths are inactive
 
 ### 2. Turbo codes (information theory)
-- **Berrou et al. 1993**: Near-Shannon-limit error correction
+- **Berrou et al. 1993**: turbo-code error correction
 - Key insight: **Extrinsic information exchange** between decoders
-- CGBC is the energy-based analog: later context sends a soft correction signal to an earlier gate
+- CGBC is the energy-based analog: later context sends a soft update signal to an earlier gate
 
 ### 3. Hindsight experience replay (reinforcement learning)
 - **Andrychowicz et al. 2017**: reference algorithm for relabeling trajectories
-- Failed trajectories are "redeemed" by relabeling them as success for what they achieved
-- CGBC is the continuous, energy-based version
+- Failed trajectories can be relabeled as success for what they achieved
+- CGBC is an energy-based analogy, not the same algorithm
 
 ### 4. Noisy channel coding
 - **Shannon 1948**: Channel capacity requires redundancy
-- Future context acts as "parity bits" that redeem earlier uncertain decisions
-- CGBC sends this correction signal to the gate variable
+- Later context can act like an update signal for earlier uncertain decisions
+- CGBC sends this update signal to the gate variable
 
 **Key Papers**:
 - Zames, G. (1966). "On the input-output stability of time-varying nonlinear feedback systems." *IEEE TAC*.
@@ -286,8 +299,8 @@ from modules.gating.energy_gating import EnergyGatingModule
 gate_module = EnergyGatingModule(gain_fn=lambda _: 0.1, a=0.2, b=0.1)
 domain_module = EnergyGatingModule(gain_fn=lambda _: 0.0, a=0.3, b=0.2)
 
-# Estimate potential benefit (your application logic)
-potential_benefit = 0.3  # if gate opens, domain improves by 0.3
+# Estimate downstream benefit (your application logic)
+potential_benefit = 0.3  # supplied estimate of downstream energy reduction
 
 # Create coordinator with CGBC (wormhole nickname)
 coord = EnergyCoordinator(
@@ -311,12 +324,12 @@ print(f"Gate opened to: {etas_final[0]:.3f}")  # e.g., 0.535!
 
 ### Computing the benefit signal
 
-The key is computing `delta_benefit`, the potential improvement if the gate were to open:
+The caller must compute `delta_benefit`, the estimated improvement if the gate were to open:
 
 ```python
 def compute_benefit(domain_module, current_eta, inputs):
     """Estimate benefit of activating this gate."""
-    # Option 1: Lookahead (fast heuristic)
+    # Option 1: Lookahead heuristic
     if gate_activates:
         eta_new = 1.0
     else:
@@ -353,21 +366,21 @@ coupling = DampedGateBenefitCoupling(
 
 ## Architecture pattern: redemption
 
-CGBC is the core mechanism behind the "Redemption" architecture pattern used throughout the framework:
+CGBC is the local mechanism behind the "Redemption" architecture pattern used throughout the framework:
 
-**Redemption** = future/later context corrects earlier/provisional decisions
+**Redemption** = later context supplies an update signal for earlier provisional decisions
 
 ### Pattern instances
 
 | Repository | η represents | CGBC manifests as | Result |
 |------------|-------------|----------------------|---------|
-| **This framework** | Generic order parameter | `GateBenefitCoupling` | Inactive modules activated when beneficial |
-| `Inverse_ND_Reconstruction` | Loop trajectory parameters | Refinement stage corrects hallucinated loops | Explainable closed-loop reconstruction |
-| `Normalized_Dynamic_OPT` | Cluster centers | Later points reassign provisional assignments | efficient compression, geometric relations kept |
-| `Hallucinations_Noisy_Channels` | Latent sequence state | Later tokens correct earlier (when allowed) | Theory of hallucinations |
+| **This framework** | Generic order parameter | `GateBenefitCoupling` | Inactive modules can receive an opening force |
+| `Inverse_ND_Reconstruction` | Loop trajectory parameters | Refinement stage corrects provisional loops | Explainable closed-loop reconstruction |
+| `Normalized_Dynamic_OPT` | Cluster centers | Later points reassign provisional assignments | compact compression with geometric relations kept |
+| `Hallucinations_Noisy_Channels` | Latent sequence state | Later tokens update earlier provisional state (when allowed) | Noisy-channel analysis |
 | `Spaced_Repetition_Learning` | Replay priority | Hard/diverse samples force correction | Inference-time self-improvement |
 
-CGBC is the primitive mechanism that makes all of these work.
+In this repository, CGBC is the primitive mechanism for applying the supplied update signal to a gate.
 
 ---
 
@@ -376,10 +389,10 @@ CGBC is the primitive mechanism that makes all of these work.
 | Approach | Handles Closed Gates? | Needs Noise? | Sparse-Friendly? | Formal Guarantees? |
 |----------|---------------------|--------------|------------------|-------------------|
 | **Standard Physics** |  No gradient |  Yes |  No |  No |
-| **Dense Neural Nets** | N/A (always connected) |  No |  No (dense) |  No |
+| **Dense Neural Nets** | N/A (fixed dense connectivity) |  No |  No (dense) |  No |
 | **Sparse Neural Nets** |  Dead ReLU problem |  Yes |  Partial |  No |
 | **RL Exploration** |  With exploration |  Yes (ε-greedy) |  Partial |  No |
-| **CGBC (wormhole nickname)** |  Non-local gradient |  No |  Yes |  Yes (when combined with stability guard) |
+| **CGBC (wormhole nickname)** |  Non-local gradient from supplied estimate |  No |  Yes |  Scoped to stated stability assumptions |
 
 ---
 
@@ -392,8 +405,8 @@ CGBC is the primitive mechanism that makes all of these work.
 uv run python -m experiments.demo_wormhole
 
 # Expected output:
-# - Without CGBC: Final eta_gate = 0.112 (slow, local)
-# - With CGBC:    Final eta_gate = 0.535 (fast, non-local)
+# - Without CGBC: Final eta_gate = 0.112 (local signal only)
+# - With CGBC:    Final eta_gate = 0.535 (non-local supplied benefit)
 ```
 
 **Unit tests**: Covered in `tests/test_couplings.py` and `tests/test_gate_benefit_*.py`
@@ -416,26 +429,26 @@ The core `GateBenefitCoupling` is implemented and exercised in this repository's
 
 ### Known limitations
 
-1. **Benefit Estimation**: Computing `delta_benefit` accurately requires domain knowledge
-   - Fast heuristics (finite difference) are approximate
+1. **Benefit estimation**: Computing `delta_benefit` accurately requires domain knowledge
+   - Heuristics and finite differences are approximate
    - True benefit may depend on complex downstream effects
-   - **Mitigation**: Use conservative estimates; system is robust to noise
+   - **Mitigation**: Use conservative estimates and rely on acceptance guards for harmful steps
 
 2. **Scaling**: On large systems (1000+ modules), benefit computation can be expensive
    - Each gate needs a lookahead or finite-difference estimate
    - **Mitigation**: Amortize with caching, use sparse active sets
 
-3. **Theoretical Gap**: While mechanism is sound, we lack formal optimality proofs
+3. **Theoretical gap**: The local gradient formula is defined, but this document does not prove global optimality
    - Does CGBC converge to global minimum?
-   - Under what conditions is it better than random noise?
-   - **Status**: Empirically strong, theoretical work ongoing
+   - Under what conditions does it reduce step count or final energy relative to noise-based exploration?
+   - **Status**: Tested in synthetic gating cases; broader benefit claims require task-level ablations
 
 ### Future directions
 
-- **Learned Benefit Estimators**: Train a small network to predict `delta_benefit`
+- **Learned benefit estimators**: Train a small network to predict `delta_benefit`
 - **Hierarchical CGBCs**: Multi-level gates with nested benefit signals
-- **Adaptive Damping**: Learn `damping` and `eta_power` parameters online
-- **Formal optimality**: Prove convergence conditions for CGBC dynamics
+- **Adaptive damping**: Learn `damping` and `eta_power` parameters online
+- **Formal analysis**: Derive convergence conditions for CGBC dynamics where possible
 
 ---
 
@@ -443,7 +456,7 @@ The core `GateBenefitCoupling` is implemented and exercised in this repository's
 
 ### Q: Is this just a fancy way of saying "skip connections"?
 
-**A**: No. Skip connections are **architectural** (fixed topology). CGBCs are **dynamic** (gradient flows through topologically closed paths based on potential benefit).
+**A**: No. Skip connections are architectural and fixed in topology. CGBCs apply a dynamic gate gradient based on a supplied benefit estimate.
 
 Skip connections: "Always add input to output"
 CGBC: "Let estimated downstream value pull inactive paths open"

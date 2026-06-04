@@ -1,13 +1,13 @@
-# Equivalence: GaBP ↔ Linear Solvers (Jacobi/Gauss-Seidel)
+# Equivalence: GaBP ↔ Linear solvers (Jacobi/Gauss-Seidel)
 
-Status: Theoretical Foundation
-Scope: Algebra and proofs linking Message Passing to Gradient Descent/Iterative Linear Solvers.
+Status: theoretical foundation, with synchronous Jacobi implemented through stiffness updates.
+Scope: algebra and proofs linking message passing to gradient descent and iterative linear solvers.
 
 ---
 
-## 1. The Claim
+## 1. The claim
 
-For **quadratic energies** with **positive-definite precision** (SPD stiffness), the following algorithms perform the **exact same computation**:
+For quadratic energies with positive-definite precision (SPD stiffness), the following algorithms perform the same computation under the stated scheduling assumptions:
 
 1.  **Gaussian Belief Propagation (GaBP)** for means (message passing).
 2.  **Iterative Linear Solvers**:
@@ -17,11 +17,11 @@ For **quadratic energies** with **positive-definite precision** (SPD stiffness),
     *   Diagonal preconditioning = Jacobi.
     *   Triangular preconditioning = Gauss-Seidel.
 
-This equivalence allows us to implement "message passing" efficiently using **fast matrix-vector operations** (vectorized stiffness updates) without explicit message objects.
+This equivalence lets the repository implement the synchronous Jacobi form with vectorized stiffness updates and no explicit message objects. Sequential Gauss-Seidel remains a theoretical reference and future scheduler target in this version.
 
 ---
 
-## 2. The Algebra
+## 2. The algebra
 
 Consider a quadratic energy function (Gaussian random field):
 
@@ -42,7 +42,7 @@ J x = h
 Decompose \(J\) into **Diagonal (D)**, **Strictly Lower (L)**, and **Strictly Upper (U)** parts:
 \[ J = D + L + U \]
 
-### 2.1 Jacobi Iteration (Synchronous)
+### 2.1 Jacobi iteration (synchronous)
 
 The Jacobi update solves for \(x_i\) assuming neighbors are fixed at the *previous* step \(t\):
 
@@ -58,11 +58,11 @@ In gradient terms (since \(\nabla F = Jx - h\)):
 x^{(t+1)} = x^{(t)} - D^{-1} \nabla F(x^{(t)})
 \]
 
-**This is Gradient Descent with Inverse-Diagonal Stiffness Preconditioning.**
+This is gradient descent with inverse-diagonal stiffness preconditioning.
 
 In GaBP terms: A node computes its new mean by summing incoming messages (forces) from neighbors at time \(t\) and dividing by its total precision (stiffness).
 
-### 2.2 Gauss-Seidel Iteration (Sequential)
+### 2.2 Gauss-Seidel iteration (sequential)
 
 The GS update solves for \(x_i\) using *new* values for neighbors \(j < i\) and *old* values for \(j > i\):
 
@@ -75,17 +75,17 @@ x^{(t+1)} = (D + L)^{-1} (h - U x^{(t)})
 
 This corresponds to updating variables one by one in order, immediately using the fresh values for the next variable.
 
-**This is Coordinate Descent with Stiffness Scaling.**
+This is a sequential stiffness-scaled linear solve. The current coordinator has coordinate-descent utilities, but it does not yet expose this Gauss-Seidel stiffness schedule as a dedicated mode.
 
-In GaBP terms: Messages are passed sequentially; information flows faster in the direction of the update order.
+In GaBP terms: messages are passed sequentially, so the update order changes how information propagates.
 
 ---
 
-## 3. Why This Matters for the Homeostat
+## 3. Why this matters for the Homeostat
 
-1.  **Efficiency**: We don't need graph pointers or message objects. We just need the diagonal stiffness \(D\) (which we aggregate in `_precision_cache`) and the gradient \(\nabla F\).
-2.  **Speed**: The update \(x \leftarrow x - \nabla F / \text{diag}(J)\) is fully vectorizable (Jacobi).
-3.  **Stability**: Convergence is guaranteed if the spectral radius \(\rho(I - D^{-1}J) < 1\). This is exactly the condition enforced by our **Small-Gain Stability Projector** (diagonal dominance / Gershgorin bounds).
+1. Efficiency: the synchronous path needs the diagonal stiffness \(D\), stored in `_precision_cache`, and the gradient \(\nabla F\).
+2. Vectorization: the update \(x \leftarrow x - \nabla F / \text{diag}(J)\) maps directly to array operations.
+3. Stability: Jacobi convergence requires \(\rho(I - D^{-1}J) < 1\). The repository also applies a separate Gershgorin Lipschitz step cap for gradient iterations, which enforces \(\rho(I-\alpha H)<1\) in quadratic/SPD cases when the bound is valid.
 
 ---
 
@@ -100,11 +100,11 @@ In GaBP terms: Messages are passed sequentially; information flows faster in the
 
 ---
 
-## 5. In Our Code
+## 5. In the code
 
-- **Where**: `core/coordinator.py` inside `relax_etas`.
-- **Flag**: `use_stiffness_updates=True`.
-- **Logic**:
+- Where: `core/coordinator.py` inside `relax_etas`.
+- Flag: `use_stiffness_updates=True`.
+- Implemented logic:
   ```python
   # Equivalent to Jacobi / GaBP-Synchronous
   diag_stiffness = self.get_precision_diagonal() # D

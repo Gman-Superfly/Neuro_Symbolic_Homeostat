@@ -6,12 +6,12 @@
 
 ## Executive summary
 
-The SmallGain stability-margin allocator is validated for use with `stability_guard=True` in this repository. It achieves:
+The SmallGain stability-margin allocator is validated for use with `stability_guard=True` in the repository scenarios below. The measured results were:
 
 - **50-55% reduction** in ΔF90 (steps to 90% energy drop) vs vanilla analytic baseline on baseline scenario
-- **40% faster convergence** vs GradNorm/analytic on dense graphs (ΔF90: 12 vs 20-40 steps)
-- **4-10x better final energy** vs analytic baseline while maintaining monotone acceptance
-- **Comparable speed to GradNorm** on baseline (both ~10 steps) with stronger final energy
+- **40% fewer ΔF90 steps** vs GradNorm on the dense graph (ΔF90: 12 vs 20 steps)
+- **Lower final energy** than the analytic baseline in the listed scenarios while maintaining monotone acceptance
+- **Same ΔF90 as GradNorm** on baseline (both ~10 steps) with lower final energy
 
 ### Recommended defaults
 
@@ -34,7 +34,7 @@ coord = EnergyCoordinator(
 )
 ```
 
-**Speed-leaning variant**: Use `max_step_change=0.20` for 30% faster ΔF90 with slightly weaker final energy.
+**Lower-ΔF90 variant**: Use `max_step_change=0.20` for 30% fewer ΔF90 steps in the sweep, with slightly weaker final energy.
 
 ---
 
@@ -50,9 +50,9 @@ coord = EnergyCoordinator(
 
 **Interpretation**:
 - SmallGain **matches GradNorm** on ΔF90 (both 10 steps)
-- Achieves **4x better final energy** than GradNorm (-0.0201 vs -0.0050)
-- **52x better** than vanilla analytic baseline
-- **Fewer backtracks** than GradNorm (10 vs 15), indicating more stable steps
+- Reaches lower final energy than GradNorm (-0.0201 vs -0.0050)
+- Reaches lower final energy than the vanilla analytic baseline
+- Uses fewer backtracks than GradNorm (10 vs 15)
 
 ### Dense scenario (16 modules, dense coupling graph)
 
@@ -63,11 +63,11 @@ coord = EnergyCoordinator(
 | **smallgain** | **12**  | **-0.093700**  | 0.0569 | 92 | 6.72 |
 
 **Interpretation**:
-- SmallGain **40% faster** than GradNorm (12 vs 20 steps)
-- **4.4x better final energy** than GradNorm (-0.0937 vs -0.0212)
-- Analytic baseline **diverges** (positive final energy = failure)
+- SmallGain used **40% fewer ΔF90 steps** than GradNorm (12 vs 20 steps)
+- Lower final energy than GradNorm (-0.0937 vs -0.0212)
+- Analytic baseline ended with positive final energy in this benchmark
 - Higher wall time reflects per-step allocator cost (conservative greedy sort)
-- Slightly more backtracks (92 vs 75) acceptable for 4.4x energy improvement
+- Slightly more backtracks (92 vs 75) accompanied the lower final energy
 
 ---
 
@@ -89,10 +89,10 @@ Full sweep results (`uv run python -m experiments.sweep_smallgain --steps 60`):
 | 0.9 | 0.10 | **10** | **10** | **-0.020079** | 0.0072 |
 | 0.9 | 0.20 | **7** | 13 | -0.018973 | 0.0089 |
 
-**Key Findings**:
-- **Default ρ=0.7, Δweight=0.10** achieves best final energy with low backtracks
-- **Speed variant ρ=0.7, Δweight=0.20** reduces ΔF90 to 7 steps (30% faster) with minimal energy loss
-- ρ has minimal impact across {0.5, 0.7, 0.9}, and the conservative default of 0.7 is robust
+**Key findings**:
+- **Default ρ=0.7, Δweight=0.10** achieved the lowest final energy among these settings with low backtracks
+- **Lower-ΔF90 variant ρ=0.7, Δweight=0.20** reduced ΔF90 to 7 steps with slightly weaker final energy
+- ρ had small impact across {0.5, 0.7, 0.9} in this sweep
 
 ### Dense scenario
 
@@ -108,27 +108,27 @@ Full sweep results (`uv run python -m experiments.sweep_smallgain --steps 60`):
 | 0.9 | 0.10 | **12** | 97 | **-0.093700** | 0.1028 |
 | 0.9 | 0.20 | **8** | 67 | -0.087851 | 0.1102 |
 
-**Key Findings**:
-- **Default ρ=0.7, Δweight=0.10** again optimal for final energy
-- **Speed variant Δweight=0.20** reduces ΔF90 to 8 steps (33% faster) with 6% energy loss
-- Higher backtrack counts (97) reflect aggressive rebalancing on dense graphs, acceptable in this benchmark for the observed energy improvement
+**Key findings**:
+- **Default ρ=0.7, Δweight=0.10** again achieved the lowest final energy among these settings
+- **Lower-ΔF90 variant Δweight=0.20** reduced ΔF90 to 8 steps with weaker final energy
+- Higher backtrack counts (97) reflect aggressive rebalancing on dense graphs
 
 ---
 
 ## When to use SmallGain
 
-### Ideal use cases
+### Good fit
 
-1. **Dense coupling graphs** (10+ modules, many couplings) where GradNorm struggles
+1. **Dense coupling graphs** (10+ modules, many couplings) similar to the dense benchmark
 2. **Systems that require explicit stability guards** (`stability_guard=True`)
 3. **Energy optimization** where final energy matters more than wall-clock speed
 4. **Scenarios with mixed coupling families** (quadratic + hinge + gate-benefit)
 
 ### Consider alternatives
 
-1. **Sparse graphs** (2-3 modules): Use GradNorm or vanilla analytic (faster, similar results)
+1. **Sparse graphs** (2-3 modules): Use GradNorm or vanilla analytic if they give similar results with lower overhead
 2. **Real-time systems** with tight latency budgets: Per-step allocator overhead (2-5x vs GradNorm) may be prohibitive
-3. **Stationary landscapes**: If coupling weights don't need adaptation, fixed weights are simpler
+3. **Stationary objectives**: If coupling weights don't need adaptation, fixed weights are simpler
 
 ### Comparison with other adapters
 
@@ -136,8 +136,8 @@ Full sweep results (`uv run python -m experiments.sweep_smallgain --steps 60`):
 |---------|---------|----------|---------------|-----|
 | **ΔF90 (baseline)** | 22 | 10 | **10**  | 15 |
 | **ΔF90 (dense)** | 40 | 20 | **12**  | 18 |
-| **Final energy** | Poor | Good | **Best**  | Good |
-| **Stability guarantees** | none | none | linearized/SPD conservative bounds with guard | none |
+| **Final energy in listed runs** | Higher | Lower | **Lowest**  | Lower |
+| **Stability bounds** | none | none | linearized/SPD conservative bounds with guard | none |
 | **Compute cost** | 1x | 1.2x | **2-5x** | 1.5x |
 | **Tuning complexity** | None | Low | **Medium** | High |
 | **Repository maturity** | baseline only | benchmarked | benchmarked | experimental |
@@ -160,8 +160,8 @@ Full sweep results (`uv run python -m experiments.sweep_smallgain --steps 60`):
 ### Why keep fixed?
 
 1. **Reproducibility**: Same settings → same trajectory
-2. **Stability**: Prevents runaway weight changes
-3. **Safety**: Easy to audit/certify for regulated domains
+2. **Bounded updates**: Prevents runaway weight changes
+3. **Auditability**: Keeps the outer caps explicit
 4. **Debugging**: Clear failure attribution when things go wrong
 
 ### When to tune?
@@ -181,7 +181,7 @@ uv run python -m experiments.sweep_smallgain --quick --rhos 0.7 0.9 --dws 0.10 0
 # Analyze results
 Get-Content plots/df90_smallgain_sweep_summary.csv | ConvertFrom-Csv | Sort-Object delta_f90_steps
 
-# Pick best config by your KPI (ΔF90 / final energy / backtracks)
+# Pick a config by your KPI (ΔF90 / final energy / backtracks)
 ```
 
 ---
@@ -205,10 +205,10 @@ coord = EnergyCoordinator(
 etas = coord.relax_etas(etas0, steps=50)
 ```
 
-### Speed-optimized variant
+### Lower-ΔF90 variant
 
 ```python
-# For faster ΔF90 (30% reduction) with slightly weaker final energy
+# For fewer ΔF90 steps in the sweep, with slightly weaker final energy
 coord = EnergyCoordinator(
     modules=my_modules,
     couplings=my_couplings,
@@ -226,7 +226,7 @@ coord = EnergyCoordinator(
 ### Conservative variant
 
 ```python
-# For maximum stability (fewer backtracks) at cost of slower convergence
+# More conservative settings, usually fewer backtracks at the cost of slower convergence
 coord = EnergyCoordinator(
     modules=my_modules,
     couplings=my_couplings,
@@ -306,7 +306,7 @@ The SmallGain allocator is validated in this repository and recommended for:
 2. Applications that require explicit stability guards
 3. Scenarios prioritizing final energy quality over wall-clock speed
 
-**Defaults (ρ=0.7, Δweight=0.10)** are robust across tested scenarios. For speed-critical applications, use Δweight=0.20.
+**Defaults (ρ=0.7, Δweight=0.10)** were consistent across the tested scenarios. For applications that prioritize ΔF90 over final energy, test Δweight=0.20.
 
 ### Validation status
 

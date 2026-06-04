@@ -2,40 +2,46 @@
 
 **Status**: validated on synthetic scenarios in this repository
 **Type**: Meta-Learning / Weight Adapter
-**Novel contribution**: stability-margin allocation integrated with this repository's coordinator and observability stack
+**Contribution in this repository**: stability-margin allocation integrated with the coordinator and observability stack
 
 ---
 
 ## What it does (one sentence)
 
-The **SmallGain Allocator** treats the stability margin as a budget and allocates it across coupling terms to improve convergence while preserving conservative stability bounds in supported regimes.
+The **SmallGain Allocator** treats the stability margin as a budget and allocates it across coupling terms using value/cost proxies while preserving conservative stability bounds in supported regimes.
 
 ---
 
-## The problem it solves
+## The problem it addresses
 
-In energy-based optimization with multiple coupled terms (modules), you have two conflicting goals:
+In energy-based optimization with multiple coupled terms (modules), two goals compete:
 
-1. **Speed**: Boost important couplings to converge faster
-2. **Stability**: Don't boost so much that the system becomes unstable/divergent
+1. **Convergence rate**: Increase coupling weights that appear useful.
+2. **Stability margin**: Keep weight changes inside the estimated margin.
 
-Traditional approaches either:
-- Apply uniform damping (wastes budget on unimportant terms)
-- Use heuristics like GradNorm (no stability guarantees)
-- Hope for the best (systems can diverge on dense graphs)
+Common approaches include:
+- Apply uniform damping, which can spend margin on low-value terms.
+- Use heuristics like GradNorm, which do not expose the same stability-margin contract.
+- Tune manually, which can fail on dense graphs when the step or coupling weights are too large.
 
 ---
 
 ## The solution: resource allocation with conservative bounds
 
-**Core Insight**: Your system has a stability margin \( m \approx 2/\hat{L} - \alpha \) where \(\hat{L}\) is the Lipschitz constant. This margin is like a **budget** you can spend.
+The coordinator estimates a conservative Lipschitz bound \(\hat{L}\) and caps the gradient step below \(2/\hat{L}\). The remaining margin,
+
+\[
+m = 2/\hat{L} - \alpha_{\mathrm{used}},
+\]
+
+acts as a budget for bounded coupling-weight increases.
 
 **SmallGain treats optimization like a knapsack problem**:
 
 - **Budget**: Available stability margin (how much curvature increase you can afford)
 - **Cost**: Each coupling edge costs \(\Delta L_k\) (Lipschitz increase per unit weight boost)
 - **Value**: Each edge provides \(\Delta F_k\) (energy reduction per unit weight boost)
-- **Policy**: Greedy allocation by `value/cost` ratio (fractional knapsack is optimal)
+- **Policy**: greedy allocation by `value/cost` ratio under a global spend cap
 
 ### Algorithm (per step)
 
@@ -63,17 +69,17 @@ Traditional approaches either:
 5. Return updated weights (bounded by [floor, ceiling])
 ```
 
-## Visual: stability budget allocation (fractional knapsack)
+## Visual: stability budget allocation
 
 ```
-Stability budget B = ρ · (2/α)
+Stability budget B = ρ · m
 
 Remaining budget:
 [||||||||||||||||||||      ]   ← B − spent
  ^ spent (Σ δL)             ^ remaining
 
 Edges ranked by score = value/cost (descending):
-  e3: ████████████████   (best payoff)
+  e3: ████████████████   (highest score)
   e1: ████████
   e2: ███
   e4: ██
@@ -96,32 +102,32 @@ The SmallGain Allocator combines three classical results:
 
 1. **Small-Gain Theorem** (Zames 1966, Control Theory)
    - For feedback stability, keep total loop gain < 1
-   - We budget the stability "reserve" optimally
+   - We budget the stability reserve with an explicit spend cap.
 
 2. **Fractional Knapsack** (Dantzig 1957, Optimization)
-   - Greedy by value/cost is optimal when items are divisible
-   - Local linearization makes weight changes "divisible"
+   - Greedy by value/cost is the standard solution for the ideal divisible form.
+   - The implementation uses this as a local heuristic for bounded weight changes.
 
 3. **Gauss-Southwell Rule** (Nutini et al. 2015, Coordinate Descent)
-   - Prioritize coordinates with best \(g²/(2L)\) ratio
+   - Prioritize coordinates with high \(g²/(2L)\) ratio
    - Our per-edge scores mirror this at the coupling level
 
 4. **Gershgorin Bounds** (1931, Linear Algebra)
-   - Per-row diagonal/off-sum bounds justify row-aware budgeting
+   - Diagonal/off-sum bounds provide conservative Lipschitz estimates and row-margin telemetry
 
-**Bounded-case guarantee**: If SmallGain spends ≤ ρ·budget with ρ < 1, linearized/SPD regimes remain contractive under the stated assumptions.
+**Bounded-case result**: For quadratic/SPD energy \(F(x)=\tfrac12x^\top Hx-h^\top x\), if the Gershgorin estimate \(\hat{L}\) upper-bounds \(\lambda_{\max}(H)\) and the coordinator uses \(\alpha_{\mathrm{used}} < 2/\hat{L}\), then the gradient iteration matrix \(I-\alpha_{\mathrm{used}}H\) has spectral radius below 1. SmallGain uses the remaining estimated margin as a bounded allocation budget. The current implementation enforces the global spend cap; row margins are recorded for telemetry and future row-incidence booking.
 
 ---
 
-## Performance results (validated)
+## Performance results (repository benchmarks)
 
 ### Baseline scenario (2 modules, 2 couplings)
 
 | Config | ΔF90 Steps | Final Energy | Improvement |
 |--------|-----------|--------------|-------------|
 | Analytic | 22 | -0.000385 | baseline |
-| GradNorm | 10 | -0.005014 | 2.2x faster |
-| **SmallGain** | **10**  | **-0.020079**  | **2.2x faster, 52x better energy** |
+| GradNorm | 10 | -0.005014 | 2.2x fewer ΔF90 steps |
+| **SmallGain** | **10**  | **-0.020079**  | **2.2x fewer ΔF90 steps, lower final energy** |
 
 ### Dense scenario (16 modules, 48 couplings)
 
@@ -129,13 +135,13 @@ The SmallGain Allocator combines three classical results:
 |--------|-----------|--------------|-------------|
 | Analytic | 40 | +0.018582  | diverges |
 | GradNorm | 20 | -0.021235 | usable |
-| **SmallGain** | **12**  | **-0.093700**  | **40% faster, 4.4x better energy** |
+| **SmallGain** | **12**  | **-0.093700**  | **40% fewer ΔF90 steps, lower final energy** |
 
-**Key Takeaways**:
+**Measured takeaways**:
 - Matches GradNorm on simple problems
-- **40% faster** than GradNorm on dense graphs
-- **4-52x better final energy** than baselines
-- **Prevents divergence** where vanilla methods fail
+- **40% fewer ΔF90 steps** than GradNorm on the dense benchmark
+- Lower final energy than the compared baselines in these benchmark rows
+- Avoided the dense-benchmark divergence observed in the analytic baseline
 - Conservative stability controls, plus monotone acceptance checks
 
 **See full validation**: [`SMALLGAIN_VALIDATION_FINAL.md`](SMALLGAIN_VALIDATION_FINAL.md)
@@ -173,13 +179,13 @@ SmallGainWeightAdapter(
 )
 ```
 
-### Speed-optimized variant
+### Faster ΔF90 variant
 
 ```python
-# For 30% faster ΔF90 with slightly weaker final energy
+# For 30% fewer ΔF90 steps in the documented sweep, with slightly weaker final energy
 SmallGainWeightAdapter(
     budget_fraction=0.7,
-    max_step_change=0.20,     # larger steps = faster convergence
+    max_step_change=0.20,     # larger weight changes
     floor=0.1,
     ceiling=3.0,
 )
@@ -188,7 +194,7 @@ SmallGainWeightAdapter(
 ### Conservative variant
 
 ```python
-# For maximum stability (fewer backtracks), slower convergence
+# More conservative settings, usually fewer backtracks and slower convergence
 SmallGainWeightAdapter(
     budget_fraction=0.5,      # more conservative budget
     max_step_change=0.05,     # smaller steps
@@ -201,39 +207,38 @@ SmallGainWeightAdapter(
 
 ## When to use SmallGain
 
-### Ideal use cases
+### Good fit
 
 1. **Dense coupling graphs** (10+ modules, many couplings)
-   - SmallGain shines where GradNorm struggles
-   - 40% faster convergence demonstrated
+   - The dense benchmark shows fewer ΔF90 steps than GradNorm
 
 2. **Systems where conservative stability guards are required**
-   - Linearized/SPD guarantees with explicit assumptions
+   - Linearized/SPD bounds under explicit assumptions
    - Monotone acceptance maintained
 
 3. **Energy quality matters** more than wall-clock speed
-   - 4-10x better final energy than baselines
+   - Lower final energy in the documented dense benchmark
    - Worth the 2-5x per-step overhead
 
 4. **Mixed coupling families** (quadratic + hinge + gate-benefit)
-   - Optimal allocation across heterogeneous terms
+   - Greedy value/cost allocation across heterogeneous terms
 
 ### Consider alternatives
 
 1. **Sparse graphs** (2-3 modules)
-   - GradNorm is faster with similar results
+   - GradNorm can have lower overhead with similar results
    - Overhead not worth it for simple problems
 
 2. **Real-time systems** with tight latency budgets
    - Per-step overhead: 2-5x vs GradNorm
    - Use speed-optimized variant or GradNorm
 
-3. **Stationary landscapes** (fixed weights work fine)
+3. **Stationary objectives** (fixed weights work fine)
    - No adaptation needed if static weights converge well
 
 ---
 
-## Tuning (when defaults are not optimal)
+## Tuning (when defaults are not the right fit)
 
 **When to tune**:
 - Domain-specific constraints (must converge in <N steps)
@@ -252,13 +257,13 @@ Get-Content plots/df90_smallgain_sweep_summary.csv | ConvertFrom-Csv | Sort-Obje
 
 **Key parameters**:
 - **`budget_fraction` (ρ)**: Fraction of margin to spend per step
-  - Lower (0.5) = safer, slower
-  - Higher (0.9) = aggressive, faster
-  - Default (0.7) is robust across scenarios
+  - Lower (0.5) = more conservative, slower
+  - Higher (0.9) = more aggressive, often fewer steps
+  - Default (0.7) was consistent across tested scenarios
 
 - **`max_step_change`**: Maximum relative weight change per step
-  - Lower (0.05) = smoother, more stable
-  - Higher (0.20) = faster convergence, more backtracks
+  - Lower (0.05) = smoother, more conservative
+  - Higher (0.20) = often fewer ΔF90 steps, more backtracks
   - Default (0.10) balances speed and stability
 
 ---
@@ -324,14 +329,14 @@ uv run python -m experiments.benchmark_delta_f90 --configs analytic gradnorm sma
 
 The name comes from the **Small-Gain Theorem** in control theory:
 
-> *For a feedback system to be stable, the total loop gain must be < 1*
+> *A sufficient condition for feedback stability is total loop gain < 1*
 
 The allocator:
 1. Estimates the "gain" (Lipschitz cost) of each coupling edge
-2. Keeps total gain within a safe budget (< 1 stability margin)
-3. Allocates that budget to edges with best payoff (energy reduction per gain)
+2. Keeps total gain within a bounded stability budget
+3. Allocates that budget to edges with high estimated payoff (energy reduction per gain)
 
-**Result**: Faster convergence in the documented dense scenarios, with conservative stability controls.
+**Result**: Fewer ΔF90 steps in the documented dense scenarios, with conservative stability controls.
 
 ---
 

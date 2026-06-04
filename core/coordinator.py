@@ -25,7 +25,6 @@ from .interfaces import (
     OrderParameter,
     SupportsLocalEnergyGrad,
     SupportsCouplingGrads,
-    SupportsPrecision,
     WeightAdapter,
 )
 from .couplings import (
@@ -35,10 +34,13 @@ from .couplings import (
     GateBenefitCoupling,
     DampedGateBenefitCoupling,
 )
-from .energy import project_noise_orthogonal, project_noise_metric_orthogonal, total_energy
+from .energy import total_energy
 from .prox_utils import prox_asym_hinge_pair, prox_linear_gate, prox_quadratic_pair
 from .agm_metrics import compute_agm_phase_metrics, compute_uncertainty_metrics
 from .noise_controller import OrthogonalNoiseController, PrecisionNoiseController
+from .coordinator_noise import build_noise_vector, resolved_noise_mode
+from .coordinator_precision import get_precision_diagonal, update_precision_cache
+from .coordinator_stability import estimate_lipschitz_bound
 
 
 @dataclass
@@ -148,6 +150,7 @@ class EnergyCoordinator:
     # Lipschitz/allocator details (instrumentation for adapters/telemetry)
     expose_lipschitz_details: bool = False
     # Noise / Exploration controls
+    noise_mode: Optional[str] = None  # None maps legacy flags to: isotropic, orthogonal, or precision_orthogonal.
     enable_orthogonal_noise: bool = True  # Inject noise orthogonal to gradient (structure-preserving)
     # Note: default magnitude is 0.0 to preserve determinism unless explicitly enabled in experiments.
     noise_magnitude: float = 0.0
@@ -190,6 +193,7 @@ class EnergyCoordinator:
     _gate_uncertainty_scale: float = field(default=1.0, init=False, repr=False)
     _accepted_energy_history: List[float] = field(default_factory=list, init=False, repr=False)
     _contraction_margin_history: List[float] = field(default_factory=list, init=False, repr=False)
+    _rejected_steps: int = field(default=0, init=False, repr=False)
     _early_stop_stable_count: int = field(default=0, init=False, repr=False)
     _probe_dispersion_history: List[float] = field(default_factory=list, init=False, repr=False)
     _probe_trajectory_window: List[List[float]] = field(default_factory=list, init=False, repr=False)
@@ -203,7 +207,8 @@ class EnergyCoordinator:
         self._validate_configuration()
         self._ensure_adjacency(len(self.modules))
         self._build_vectorized_cache()
-        if self.auto_noise_controller and self.enable_orthogonal_noise:
+        noise_mode = self._resolved_noise_mode()
+        if self.auto_noise_controller and noise_mode in {"orthogonal", "precision_orthogonal", "metric_orthogonal"}:
             if self.precision_aware_noise_controller:
                 self._noise_controller = PrecisionNoiseController(
                     base_magnitude=float(self.noise_magnitude),
@@ -218,6 +223,19 @@ class EnergyCoordinator:
         else:
             self._noise_controller = None
         self._last_energy_drop_ratio = 1.0
+
+    def _resolved_noise_mode(self) -> str:
+        """Resolve legacy noise flags into an explicit noise mode."""
+        return resolved_noise_mode(self)
+
+    def _build_noise_vector(
+        self,
+        raw_noise: np.ndarray,
+        grad_vector: np.ndarray,
+        current_noise_mag: float,
+    ) -> np.ndarray:
+        """Build a noise vector for the configured noise mode."""
+        return build_noise_vector(self, raw_noise, grad_vector, current_noise_mag)
 
     def compute_etas(self, inputs: List[Any]) -> List[OrderParameter]:
         assert len(inputs) == len(self.modules), "inputs/modules length mismatch"
@@ -250,7 +268,10 @@ class EnergyCoordinator:
             return self.relax_etas_admm(etas0, steps=self.admm_steps, rho=self.admm_rho, step_size=self.admm_step_size)
         etas = [float(e) for e in etas0]
         # Initialize noise controller (if enabled)
-        controller = self._noise_controller if (self.auto_noise_controller and self.enable_orthogonal_noise) else None
+        noise_mode = self._resolved_noise_mode()
+        controller = self._noise_controller if (
+            self.auto_noise_controller and noise_mode in {"orthogonal", "precision_orthogonal", "metric_orthogonal"}
+        ) else None
         if controller is not None:
             controller.base_magnitude = float(self.noise_magnitude)
             controller.decay = float(self.noise_schedule_decay)
@@ -260,6 +281,7 @@ class EnergyCoordinator:
         prev_energy_value: Optional[float] = energy_value
         self._accepted_energy_history = []
         self._contraction_margin_history = []
+        self._rejected_steps = 0
         oscillations = 0
         for iter_idx in range(steps):
             etas_prev = list(etas)
@@ -312,7 +334,7 @@ class EnergyCoordinator:
             grad_vector = np.array(grads, dtype=float)
             noise_vector = np.zeros_like(grad_vector)
             current_noise_mag = 0.0
-            if self.enable_orthogonal_noise:
+            if noise_mode in {"orthogonal", "precision_orthogonal", "metric_orthogonal"}:
                 if controller is not None:
                     current_noise_mag = controller.step(
                         grad_vector,
@@ -320,46 +342,15 @@ class EnergyCoordinator:
                         backtracks=int(self._last_step_backtracks),
                         iter_idx=iter_idx,
                     )
-            else:
+                else:
+                    current_noise_mag = self.noise_magnitude * (self.noise_schedule_decay ** iter_idx)
+            elif noise_mode == "isotropic":
                 current_noise_mag = self.noise_magnitude * (self.noise_schedule_decay ** iter_idx)
+            else:
+                current_noise_mag = 0.0
             if current_noise_mag > 1e-9:
                 raw_noise = np.random.normal(0, 1, size=grad_vector.shape)
-                if self.metric_aware_noise_controller and (self.metric_vector_product is not None or self.metric_matrix is not None):
-                    noise_vector = project_noise_metric_orthogonal(
-                        raw_noise,
-                        grad_vector,
-                        M=self.metric_matrix,
-                        Mv=self.metric_vector_product,
-                    )
-                else:
-                    noise_vector = project_noise_orthogonal(raw_noise, grad_vector)
-                # Precision-aware redistribution toward low-curvature directions
-                if self.precision_aware_noise_controller:
-                    try:
-                        curv_diag = np.asarray(self.get_precision_diagonal(), dtype=float)
-                        # If controller supports weights_for_curvatures, use it; else compute locally
-                        if isinstance(self._noise_controller, PrecisionNoiseController) and hasattr(self._noise_controller, "weights_for_curvatures"):
-                            weights = self._noise_controller.weights_for_curvatures(curv_diag, eps=self.precision_epsilon)  # type: ignore[attr-defined]
-                        else:
-                            inv = 1.0 / (float(self.precision_epsilon) + np.maximum(curv_diag, 0.0))
-                            inv_norm = float(np.linalg.norm(inv))
-                            weights = inv / inv_norm if inv_norm > 0.0 else inv
-                        # Reweight and re-project to preserve orthogonality
-                        noise_weighted = weights * noise_vector
-                        if self.metric_aware_noise_controller and (self.metric_vector_product is not None or self.metric_matrix is not None):
-                            noise_vector = project_noise_metric_orthogonal(
-                                noise_weighted,
-                                grad_vector,
-                                M=self.metric_matrix,
-                                Mv=self.metric_vector_product,
-                            )
-                        else:
-                            noise_vector = project_noise_orthogonal(noise_weighted, grad_vector)
-                    except Exception:
-                        pass
-                noise_norm = np.linalg.norm(noise_vector)
-                if noise_norm > 1e-9:
-                    noise_vector = noise_vector * (current_noise_mag / noise_norm)
+                noise_vector = self._build_noise_vector(raw_noise, grad_vector, current_noise_mag)
             
             # step
             if self.line_search:
@@ -395,7 +386,7 @@ class EnergyCoordinator:
                 # Standard Armijo along -grad direction
                 # Apply line search on grads_eff (mirror-aware if enabled), then add noise
                 etas = self._step_with_backtracking(etas, grads_eff, step_to_use)
-                if self.enable_orthogonal_noise and np.any(noise_vector):
+                if np.any(noise_vector):
                     # Add noise (orthogonal to gradient, so doesn't fight the descent step to first order)
                     for i in range(len(etas)):
                         etas[i] = float(max(0.0, min(1.0, etas[i] + noise_vector[i])))
@@ -421,7 +412,7 @@ class EnergyCoordinator:
                             else:
                                 g_eff = float(grads[i])
                             update = -step_to_use * g_eff
-                        if self.enable_orthogonal_noise:
+                        if np.any(noise_vector):
                             update += noise_vector[i]
                         etas[i] = float(max(0.0, min(1.0, etas[i] + update)))
             
@@ -474,6 +465,9 @@ class EnergyCoordinator:
             if should_reject:
                 if not self._last_acceptance_reason:
                     self._last_acceptance_reason = "non_monotonic_rejected"
+                self._rejected_steps += 1
+                etas = list(etas_prev)
+                energy_value = float(prev_energy_value) if prev_energy_value is not None else self._energy_value(etas)
                 break
             # Emit only after acceptance
             # Record acceptance reason for standard/coordinate steps
@@ -883,67 +877,11 @@ class EnergyCoordinator:
         Locals: Uses SupportsPrecision.curvature if available, scaled by local term weight.
         Couplings: Adds curvature from quadratic and active hinge couplings, scaled by coupling term weights.
         """
-        n = len(etas)
-        diag = np.zeros(n, dtype=float)
-        cw = self._combined_term_weights()
-        # Local module curvature
-        for idx, (m, eta) in enumerate(zip(self.modules, etas)):
-            w_loc = float(cw.get(f"local:{m.__class__.__name__}", 1.0))
-            if isinstance(m, SupportsPrecision):
-                try:
-                    curv = max(0.0, float(m.curvature(float(eta))))
-                except Exception:
-                    curv = 0.0
-            else:
-                curv = 0.0
-            if w_loc != 0.0 and curv != 0.0:
-                diag[idx] += w_loc * curv
-        # Coupling curvature (diagonal contributions)
-        for i, j, coup in self.couplings:
-            key = f"coup:{coup.__class__.__name__}"
-            w_eff = float(cw.get(key, 1.0))
-            if w_eff == 0.0:
-                continue
-            if isinstance(coup, QuadraticCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                add = 2.0 * w
-                if add != 0.0:
-                    if 0 <= i < n:
-                        diag[i] += add
-                    if 0 <= j < n:
-                        diag[j] += add
-            elif isinstance(coup, DirectedHingeCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                gap = float(etas[j]) - float(etas[i])
-                if w != 0.0 and gap > 0.0:
-                    add = 2.0 * w
-                    if 0 <= i < n:
-                        diag[i] += add
-                    if 0 <= j < n:
-                        diag[j] += add
-            elif isinstance(coup, AsymmetricHingeCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                alpha = float(getattr(coup, "alpha_i", 1.0))
-                beta = float(getattr(coup, "beta_j", 1.0))
-                gap = beta * float(etas[j]) - alpha * float(etas[i])
-                if w != 0.0 and gap > 0.0:
-                    add_i = 2.0 * w * (alpha * alpha)
-                    add_j = 2.0 * w * (beta * beta)
-                    if 0 <= i < n:
-                        diag[i] += add_i
-                    if 0 <= j < n:
-                        diag[j] += add_j
-            else:
-                # Linear (e.g., GateBenefit) or unknown: no curvature contribution
-                continue
-        # Persist as a sparse-like map to minimize downstream changes
-        self._precision_cache = {int(idx): float(val) for idx, val in enumerate(diag)}
+        update_precision_cache(self, etas)
 
     def get_precision_diagonal(self) -> List[float]:
         """Return the currently cached diagonal precision vector."""
-        if self._precision_cache is None:
-            return [0.0] * len(self.modules)
-        return [self._precision_cache.get(i, 0.0) for i in range(len(self.modules))]
+        return get_precision_diagonal(self)
     
     def _compute_entropy(self, etas: List[OrderParameter]) -> float:
         """Compute Shannon-like entropy for order parameters: S = -Σ[η*log(η) + (1-η)*log(1-η)]."""
@@ -1261,55 +1199,7 @@ class EnergyCoordinator:
         Approximates diagonal (local curvature) via finite differences of local gradient
         and adds coupling curvature contributions for quadratic/hinge families.
         """
-        n = len(etas)
-        if n == 0:
-            return 0.0
-        diag = np.zeros(n, dtype=float)
-        offsum = np.zeros(n, dtype=float)
-        eps = max(self.grad_eps * 0.5, 1e-6)
-        # Local curvature (finite-diff on local gradient)
-        for i in range(n):
-            eta_i = float(etas[i])
-            g_m = self._local_grad(i, max(0.0, min(1.0, eta_i - eps)))
-            g_p = self._local_grad(i, max(0.0, min(1.0, eta_i + eps)))
-            curv = (g_p - g_m) / (2.0 * eps)
-            if math.isfinite(curv) and curv > 0.0:
-                diag[i] += float(curv)
-        # Coupling curvature
-        for i, j, coup in self.couplings:
-            key = f"coup:{coup.__class__.__name__}"
-            w_eff = float(self._combined_term_weights().get(key, 1.0))
-            if isinstance(coup, QuadraticCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                diag[i] += 2.0 * w
-                diag[j] += 2.0 * w
-                offsum[i] += 2.0 * w
-                offsum[j] += 2.0 * w
-            elif isinstance(coup, DirectedHingeCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                gap = float(etas[j]) - float(etas[i])
-                if gap > 0.0:
-                    diag[i] += 2.0 * w
-                    diag[j] += 2.0 * w
-                    offsum[i] += 2.0 * w
-                    offsum[j] += 2.0 * w
-            elif isinstance(coup, AsymmetricHingeCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                alpha = float(getattr(coup, "alpha_i", 1.0))
-                beta = float(getattr(coup, "beta_j", 1.0))
-                gap = beta * float(etas[j]) - alpha * float(etas[i])
-                if gap > 0.0:
-                    diag[i] += 2.0 * w * (alpha * alpha)
-                    diag[j] += 2.0 * w * (beta * beta)
-                    offsum[i] += 2.0 * w * abs(alpha * beta)
-                    offsum[j] += 2.0 * w * abs(alpha * beta)
-            else:
-                # GateBenefit are linear (no curvature); ignore others
-                continue
-        L_est = float(np.max(diag + offsum))
-        if not math.isfinite(L_est) or L_est <= 0.0:
-            return 0.0
-        return L_est
+        return estimate_lipschitz_bound(self, etas)
 
     def _estimate_lipschitz_details(
         self,
@@ -1756,6 +1646,9 @@ class EnergyCoordinator:
         assert isinstance(self.modules, list) and len(self.modules) > 0, "at least one module required"
         assert self.grad_eps > 0.0, "grad_eps must be > 0"
         assert self.step_size > 0.0, "step_size must be > 0"
+        if self.noise_mode is not None:
+            allowed_noise_modes = {"none", "isotropic", "orthogonal", "precision_orthogonal", "metric_orthogonal"}
+            assert str(self.noise_mode).lower() in allowed_noise_modes, f"noise_mode must be one of {allowed_noise_modes}"
         assert 0.0 < self.armijo_c < 1.0, "armijo_c must be between 0 and 1"
         assert 0.0 < self.backtrack_factor < 1.0, "backtrack_factor must be in (0,1)"
         assert self.max_backtrack >= 0, "max_backtrack must be non-negative"
