@@ -15,6 +15,7 @@ from typing import Any, Mapping, List, Tuple
 from core.coordinator import EnergyCoordinator
 from core.couplings import QuadraticCoupling, AsymmetricHingeCoupling
 from core.interfaces import EnergyModule, OrderParameter, SupportsLocalEnergyGrad
+from core.solver_config import SolverConfig
 
 
 @dataclass
@@ -56,9 +57,7 @@ def main() -> None:
         couplings=coups,
         constraints=constraints,
         use_analytic=True,
-        operator_splitting=True,  # prox-only path
-        prox_steps=50,
-        prox_tau=0.05,
+        solver=SolverConfig.proximal_solver(steps=50, tau=0.05),
         stability_guard=True,
         auto_step_from_lipschitz=True,
         enable_orthogonal_noise=True,
@@ -70,7 +69,7 @@ def main() -> None:
 
     etas0: List[float] = [0.2, 0.1]
     E0 = coord.energy(etas0)
-    etas1 = coord.relax_etas(list(etas0), steps=1)  # dispatches to relax_etas_proximal
+    etas1 = coord.relax_etas(list(etas0))
     E1 = coord.energy(etas1)
 
     print("=== Proximal Operator-Splitting Demo ===")

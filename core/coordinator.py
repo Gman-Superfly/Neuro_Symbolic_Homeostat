@@ -1,19 +1,9 @@
-"""Coordinator for total energy evaluation and optional eta relaxation.
-
-NOTE: CODE IS FROM CFC V0.4 There are many extra functions and 
-classes that are not used in this paper demo repo
-(to be cleaned up)
-
-This coordinator can:
-- compute etas from inputs via modules
-- compute total energy with couplings
-- optionally relax etas by gradient steps on F_total (finite-difference)
-"""
+"""Coordinate energy evaluation and guarded relaxation across modules."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import math
 import warnings
@@ -35,12 +25,14 @@ from .couplings import (
     DampedGateBenefitCoupling,
 )
 from .energy import total_energy
-from .prox_utils import prox_asym_hinge_pair, prox_linear_gate, prox_quadratic_pair
-from .agm_metrics import compute_agm_phase_metrics, compute_uncertainty_metrics
+from .diagnostics import CoordinatorSnapshot
 from .noise_controller import OrthogonalNoiseController, PrecisionNoiseController
 from .coordinator_noise import build_noise_vector, resolved_noise_mode
 from .coordinator_precision import get_precision_diagonal, update_precision_cache
 from .coordinator_stability import estimate_lipschitz_bound
+from .config import CoordinatorConfig
+from .solver_config import ADMMSolverConfig, ProximalSolverConfig, SolverConfig, SolverMode
+from .solvers import solve_admm, solve_proximal
 
 
 @dataclass
@@ -80,13 +72,9 @@ EtaUpdateCallback = Callable[[List[OrderParameter]], None]
 EnergyUpdateCallback = Callable[[float], None]
 
 
-def _is_gate_module(module: EnergyModule) -> bool:
-    return hasattr(module, "cost") and module.__class__.__name__ == "EnergyGatingModule"
-
-
 @dataclass
 class EnergyCoordinator:
-    """Energy coordinator with simple event hooks."""
+    """Compose local and coupling energies under guarded update rules."""
 
     modules: List[EnergyModule]
     couplings: List[tuple[int, int, EnergyCoupling]]
@@ -106,23 +94,12 @@ class EnergyCoordinator:
     use_vectorized_gate_benefits: bool = True
     neighbor_gradients_only: bool = True
     enforce_invariants: bool = True
-    # Operator-splitting / proximal mode
-    operator_splitting: bool = False
-    prox_tau: float = 0.05
-    prox_steps: int = 50
-    prox_block_mode: Optional[str] = None  # e.g., "star"
+    solver: SolverConfig = field(default_factory=SolverConfig)
     # Stiffness-based updates (Jacobi/Newton-like per-coordinate step)
     # When enabled, the coordinator uses Δη_i = - (∂F/∂η_i) / (diag_curvature_i + ε) (optionally scaled by stability cap)
     # Diagonal curvature aggregates local module curvature (if provided) and coupling curvature (quadratic + active hinges).
     use_stiffness_updates: bool = False
     stiffness_epsilon: float = 1e-8
-    # ADMM (experimental, quadratic couplings focus)
-    use_admm: bool = False
-    admm_rho: float = 1.0
-    admm_steps: int = 50
-    admm_step_size: float = 0.05
-    admm_gate_prox: bool = True  # apply prox-linear step for gate-benefit after gradient update
-    admm_gate_damping: float = 0.5  # blend factor for prox step (0..1)
     # Free-energy guard: F = U - T*S acceptance (Phase 2)
     use_free_energy_guard: bool = False
     free_energy_temperature: float = 1.0
@@ -140,7 +117,7 @@ class EnergyCoordinator:
     max_term_norm_ratio: float = 10.0
     # Optional term-weight adapter
     weight_adapter: Optional[WeightAdapter] = None
-    # Stability / small-gain guard (optional)
+    # Curvature-based stability guard (optional)
     stability_guard: bool = True
     stability_cap_fraction: float = 0.9  # cap step to this fraction of 2/L estimate
     log_contraction_margin: bool = False
@@ -159,7 +136,7 @@ class EnergyCoordinator:
     # Metric-aware projection (optional)
     metric_aware_noise_controller: bool = False
     metric_matrix: Optional[np.ndarray] = None
-    metric_vector_product: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    metric_solve: Optional[Callable[[np.ndarray], np.ndarray]] = None
     # Precision-aware noise & steps
     precision_aware_noise_controller: bool = False
     use_precision_preconditioning: bool = True
@@ -167,9 +144,10 @@ class EnergyCoordinator:
     # Auto step selection from Lipschitz bound (optional; requires stability_guard)
     auto_step_from_lipschitz: bool = False
     # (uncertainty-gated gate costs removed)
-    # Energy conservation check (enabled by default; aligns with repo's monotonic energy goal)
-    assert_monotonic_energy: bool = True  # Assert F_t+1 ≤ F_t in deterministic mode; guards auto-skip for noise/line-search
+    # Monotone acceptance assertion for deterministic accepted steps.
+    assert_monotonic_energy: bool = True
     monotonic_energy_tol: float = 1e-10  # Tolerance for numeric jitter
+    continue_after_rejection: bool = False  # Restore and attempt the remaining schedule instead of stopping.
     # (escape/confidence logging removed)
 
     on_eta_updated: List[EtaUpdateCallback] = field(default_factory=list)
@@ -181,7 +159,6 @@ class EnergyCoordinator:
     _trial_buffer: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     _local_energy_buffer: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     _local_grad_buffer: Optional[np.ndarray] = field(default=None, init=False, repr=False)
-    _adaptive_switches: int = field(default=0, init=False, repr=False)
     _total_backtracks: int = field(default=0, init=False, repr=False)
     _last_step_backtracks: int = field(default=0, init=False, repr=False)
     _last_acceptance_reason: Optional[str] = field(default=None, init=False, repr=False)
@@ -190,25 +167,39 @@ class EnergyCoordinator:
     _last_lipschitz_details: Optional[dict] = field(default=None, init=False, repr=False)
     _noise_controller: Optional[OrthogonalNoiseController] = field(default=None, init=False, repr=False)
     _last_energy_drop_ratio: float = field(default=1.0, init=False, repr=False)
-    _gate_uncertainty_scale: float = field(default=1.0, init=False, repr=False)
     _accepted_energy_history: List[float] = field(default_factory=list, init=False, repr=False)
+    _guard_energy_transitions: List[Tuple[int, float, float]] = field(default_factory=list, init=False, repr=False)
+    _attempt_energy_history: List[float] = field(default_factory=list, init=False, repr=False)
+    _objective_version: int = field(default=0, init=False, repr=False)
     _contraction_margin_history: List[float] = field(default_factory=list, init=False, repr=False)
     _rejected_steps: int = field(default=0, init=False, repr=False)
     _early_stop_stable_count: int = field(default=0, init=False, repr=False)
-    _probe_dispersion_history: List[float] = field(default_factory=list, init=False, repr=False)
-    _probe_trajectory_window: List[List[float]] = field(default_factory=list, init=False, repr=False)
     _vectorized_cache: Optional[_VectorizedCouplingCache] = field(default=None, init=False, repr=False)
     _precision_cache: Optional[Dict[int, float]] = field(default=None, init=False, repr=False)
-    _escape_events_count: int = field(default=0, init=False, repr=False)
-    _confidence_history: List[float] = field(default_factory=list, init=False, repr=False)
-    _initial_energy_value: Optional[float] = field(default=None, init=False, repr=False)
+    _last_solver_metrics: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+
+    @classmethod
+    def from_config(
+        cls,
+        modules: List[EnergyModule],
+        couplings: List[tuple[int, int, EnergyCoupling]],
+        constraints: Mapping[str, Any],
+        config: CoordinatorConfig,
+    ) -> "EnergyCoordinator":
+        """Construct a coordinator from the grouped public configuration."""
+        return cls(modules=modules, couplings=couplings, constraints=constraints, **config.to_kwargs())
 
     def __post_init__(self) -> None:
         self._validate_configuration()
         self._ensure_adjacency(len(self.modules))
         self._build_vectorized_cache()
         noise_mode = self._resolved_noise_mode()
-        if self.auto_noise_controller and noise_mode in {"orthogonal", "precision_orthogonal", "metric_orthogonal"}:
+        if self.auto_noise_controller and noise_mode in {
+            "orthogonal",
+            "precision_orthogonal",
+            "metric_orthogonal",
+            "metric_precision_orthogonal",
+        }:
             if self.precision_aware_noise_controller:
                 self._noise_controller = PrecisionNoiseController(
                     base_magnitude=float(self.noise_magnitude),
@@ -234,8 +225,19 @@ class EnergyCoordinator:
         grad_vector: np.ndarray,
         current_noise_mag: float,
     ) -> np.ndarray:
-        """Build a noise vector for the configured noise mode."""
-        return build_noise_vector(self, raw_noise, grad_vector, current_noise_mag)
+        """Compatibility wrapper for the public noise-vector method."""
+        return self.build_noise_vector(raw_noise, grad_vector, magnitude=current_noise_mag)
+
+    def build_noise_vector(
+        self,
+        raw_noise: np.ndarray,
+        gradient: np.ndarray,
+        *,
+        magnitude: Optional[float] = None,
+    ) -> np.ndarray:
+        """Transform a raw draw according to the configured noise geometry."""
+        current_magnitude = self.noise_magnitude if magnitude is None else float(magnitude)
+        return build_noise_vector(self, raw_noise, gradient, current_magnitude)
 
     def compute_etas(self, inputs: List[Any]) -> List[OrderParameter]:
         assert len(inputs) == len(self.modules), "inputs/modules length mismatch"
@@ -251,6 +253,22 @@ class EnergyCoordinator:
         self._emit_energy(F)
         return F
 
+    def inspect_state(self, etas: List[OrderParameter]) -> CoordinatorSnapshot:
+        """Return public energy, gradient, curvature, and weight diagnostics."""
+        values = [float(value) for value in etas]
+        gradient = tuple(float(value) for value in self._grads(values))
+        self._update_precision_cache(values)
+        return CoordinatorSnapshot(
+            etas=tuple(values),
+            energy=float(self._energy_value(values)),
+            gradient=gradient,
+            precision_diagonal=tuple(float(value) for value in self.get_precision_diagonal()),
+            lipschitz_bound=float(self._estimate_lipschitz_bound(values)),
+            term_weights=dict(self._combined_term_weights()),
+            term_gradient_norms=dict(self._term_grad_norms(values)),
+            objective_version=int(self._objective_version),
+        )
+
     def _energy_value(self, etas: List[OrderParameter]) -> float:
         # Merge term weights (constraints.term_weights overridden by adapter-maintained _term_weights)
         merged_constraints: dict[str, Any] = dict(self.constraints)
@@ -261,29 +279,39 @@ class EnergyCoordinator:
 
     def relax_etas(self, etas0: List[OrderParameter], steps: int = 50) -> List[OrderParameter]:
         """Finite-difference gradient steps on F_total w.r.t. etas."""
-        # Optional operator-splitting path
-        if self.operator_splitting:
-            return self.relax_etas_proximal(etas0, steps=self.prox_steps, tau=self.prox_tau)
-        if self.use_admm:
-            return self.relax_etas_admm(etas0, steps=self.admm_steps, rho=self.admm_rho, step_size=self.admm_step_size)
+        if self.solver.mode == SolverMode.PROXIMAL:
+            return solve_proximal(self, etas0, self.solver.proximal)
+        if self.solver.mode == SolverMode.ADMM:
+            return solve_admm(self, etas0, self.solver.admm)
         etas = [float(e) for e in etas0]
         # Initialize noise controller (if enabled)
         noise_mode = self._resolved_noise_mode()
         controller = self._noise_controller if (
-            self.auto_noise_controller and noise_mode in {"orthogonal", "precision_orthogonal", "metric_orthogonal"}
+            self.auto_noise_controller and noise_mode in {
+                "orthogonal",
+                "precision_orthogonal",
+                "metric_orthogonal",
+                "metric_precision_orthogonal",
+            }
         ) else None
         if controller is not None:
             controller.base_magnitude = float(self.noise_magnitude)
             controller.decay = float(self.noise_schedule_decay)
             controller.reset()
-        stalled_steps = 0
         energy_value = self._energy_value(etas)
         prev_energy_value: Optional[float] = energy_value
         self._accepted_energy_history = []
+        self._guard_energy_transitions = []
+        self._attempt_energy_history = []
+        self._objective_version = 0
         self._contraction_margin_history = []
         self._rejected_steps = 0
-        oscillations = 0
         for iter_idx in range(steps):
+            self._last_acceptance_reason = None
+            self._last_step_backtracks = 0
+            # Weight adaptation changes the objective between iterations. Build
+            # the guard baseline under the same weights used for this proposal.
+            prev_energy_value = self._energy_value(etas)
             etas_prev = list(etas)
             L_est = None
             
@@ -334,7 +362,12 @@ class EnergyCoordinator:
             grad_vector = np.array(grads, dtype=float)
             noise_vector = np.zeros_like(grad_vector)
             current_noise_mag = 0.0
-            if noise_mode in {"orthogonal", "precision_orthogonal", "metric_orthogonal"}:
+            if noise_mode in {
+                "orthogonal",
+                "precision_orthogonal",
+                "metric_orthogonal",
+                "metric_precision_orthogonal",
+            }:
                 if controller is not None:
                     current_noise_mag = controller.step(
                         grad_vector,
@@ -377,7 +410,11 @@ class EnergyCoordinator:
                 ))
             )
             if need_details:
-                target_L = L_est
+                target_L = (
+                    2.0 * float(self.stability_cap_fraction) / float(step_to_use)
+                    if step_to_use > 0.0
+                    else L_est
+                )
                 self._last_lipschitz_details = self._estimate_lipschitz_details(
                     etas, smoothing_epsilon=max(self.grad_eps * 0.5, 1e-6), target_L=target_L
                 )
@@ -416,7 +453,6 @@ class EnergyCoordinator:
                             update += noise_vector[i]
                         etas[i] = float(max(0.0, min(1.0, etas[i] + update)))
             
-            self._emit_eta(etas)
             energy_value = self._energy_value(etas)
             if self.enforce_invariants:
                 self._check_invariants(etas, energy_value)
@@ -426,20 +462,6 @@ class EnergyCoordinator:
                 self._last_energy_drop_ratio = drop / denom
             else:
                 self._last_energy_drop_ratio = 1.0
-            # Optional strict monotonicity assertion (for debugging/validation in deterministic mode)
-            if (
-                self.assert_monotonic_energy
-                and self.noise_magnitude <= 1e-12
-                and not self.line_search
-                and self.weight_adapter is None
-                and prev_energy_value is not None
-            ):
-                assert energy_value <= prev_energy_value + self.monotonic_energy_tol, (
-                    f"Energy increased: {prev_energy_value:.12e} → {energy_value:.12e} "
-                    f"(Δ={energy_value - prev_energy_value:.3e}). This indicates a gradient bug, "
-                    f"numerical instability, or misconfigured coupling. Disable assert_monotonic_energy "
-                    f"if using exploration noise, line search, homotopy/weight-adaptation, or exotic schedules."
-                )
             # Early stop on non-monotonic energy (guard against oscillations).
             # We reject steps that don't improve our objective to prevent instability.
             should_reject = False
@@ -452,8 +474,8 @@ class EnergyCoordinator:
                 curr_free_energy = self._compute_free_energy(etas)
                 delta_F = curr_free_energy - prev_free_energy
                 
-                # Accept only if ΔF < -ε (sufficient decrease in free energy)
-                if delta_F >= -self.free_energy_epsilon:
+                # Accept non-increase within the configured numerical tolerance.
+                if delta_F > self.free_energy_epsilon:
                     should_reject = True
                     self._last_acceptance_reason = "free_energy_insufficient_decrease"
 
@@ -468,7 +490,27 @@ class EnergyCoordinator:
                 self._rejected_steps += 1
                 etas = list(etas_prev)
                 energy_value = float(prev_energy_value) if prev_energy_value is not None else self._energy_value(etas)
+                self._attempt_energy_history.append(float(energy_value))
+                if self.continue_after_rejection:
+                    continue
                 break
+            # Validate the accepted deterministic state. Rejected proposals are
+            # restored above and are not part of the monotonic energy contract.
+            if (
+                self.assert_monotonic_energy
+                and self.noise_magnitude <= 1e-12
+                and not self.line_search
+                and not self.use_free_energy_guard
+                and prev_energy_value is not None
+            ):
+                assert energy_value <= prev_energy_value + self.monotonic_energy_tol, (
+                    f"Accepted energy increased: {prev_energy_value:.12e} -> {energy_value:.12e} "
+                    f"(delta={energy_value - prev_energy_value:.3e})."
+                )
+            self._guard_energy_transitions.append(
+                (int(self._objective_version), float(prev_energy_value), float(energy_value))
+            )
+            self._attempt_energy_history.append(float(energy_value))
             # Emit only after acceptance
             # Record acceptance reason for standard/coordinate steps
             if not self.line_search and not self._last_acceptance_reason:
@@ -478,7 +520,7 @@ class EnergyCoordinator:
                     self._last_acceptance_reason = "monotone_decrease"
                 else:
                     self._last_acceptance_reason = "initial_step"
-            # (sensitivity probes, escape events, and confidence fusion removed)
+            self._emit_eta(etas)
             self._emit_energy(energy_value)
             self._record_energy_history(energy_value)
             
@@ -493,8 +535,7 @@ class EnergyCoordinator:
                 else:
                     self._early_stop_stable_count = 0
             
-            # (uncertainty-gated gate costs removed)
-            prev_energy_value = energy_value
+            weights_before_update = dict(self._term_weights)
             term_norms = self._term_grad_norms(etas)
             if self.auto_balance_term_weights:
                 self._auto_balance_term_weights(term_norms)
@@ -502,11 +543,14 @@ class EnergyCoordinator:
                 # If adapter supports allocator fields, inject details snapshot
                 if self._last_lipschitz_details is not None:
                     if hasattr(self.weight_adapter, "edge_costs"):
-                        # Prefer true edge_costs when available; fall back to family_costs
-                        edge_costs = self._last_lipschitz_details.get("edge_costs") or self._last_lipschitz_details.get("family_costs", {})
+                        # The current adapter allocates one weight per coupling
+                        # family, so its cost keys must match the term-norm keys.
+                        family_costs = self._last_lipschitz_details.get("family_costs", {})
                         try:
                             # type: ignore[attr-defined]
-                            self.weight_adapter.edge_costs = {str(k): float(v) for k, v in edge_costs.items()}
+                            self.weight_adapter.edge_costs = {
+                                str(k): float(v) for k, v in family_costs.items()
+                            }
                         except Exception:
                             pass
                     if hasattr(self.weight_adapter, "row_margins"):
@@ -527,148 +571,30 @@ class EnergyCoordinator:
                 self._term_weights = {
                     str(k): float(v) for k, v in updated.items() if isinstance(k, str)
                 }
-        self._accepted_energy_history = []
+            if self._term_weights != weights_before_update:
+                self._objective_version += 1
+                self._early_stop_stable_count = 0
         return etas
 
-    # --- Proximal / operator-splitting mode ---
-    def relax_etas_proximal(self, etas0: List[OrderParameter], steps: int = 50, tau: float = 0.05) -> List[OrderParameter]:
-        """Block-coordinate proximal updates on locals + incident couplings.
+    def relax_etas_proximal(
+        self,
+        etas0: List[OrderParameter],
+        steps: int = 50,
+        tau: float = 0.05,
+    ) -> List[OrderParameter]:
+        """Compatibility wrapper for the proximal solver."""
+        warnings.warn(
+            "relax_etas_proximal is deprecated; configure SolverConfig and call relax_etas",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        config = ProximalSolverConfig(
+            steps=steps,
+            tau=tau,
+            block_mode=self.solver.proximal.block_mode,
+        )
+        return solve_proximal(self, etas0, config)
 
-        Strategy (conservative):
-          - For each iteration:
-            1) Local proximal gradient for every module (project to [0,1]).
-            2) Pairwise prox on couplings (closed-form for quadratic/hinge family; projected if needed).
-          - Emit accepted energies only; stop if energy increases.
-        """
-        if self.prox_block_mode == "star":
-            return self._relax_etas_proximal_star(etas0, steps=steps, tau=tau)
-        assert tau > 0.0, "prox tau must be positive"
-        etas = [float(e) for e in etas0]
-        prev_energy = self._energy_value(etas)
-        self._emit_eta(etas)
-        self._emit_energy(prev_energy)
-        for _ in range(steps):
-            # 1) Local proximal gradient step
-            for idx, m in enumerate(self.modules):
-                # gradient of local (analytic if available)
-                if isinstance(m, SupportsLocalEnergyGrad):
-                    g = float(m.d_local_energy_d_eta(etas[idx], self.constraints))
-                else:
-                    base = float(m.local_energy(etas[idx], self.constraints))
-                    bumped = float(m.local_energy(min(1.0, etas[idx] + self.grad_eps), self.constraints))
-                    g = (bumped - base) / self.grad_eps
-                # apply term weight
-                w = float(self._combined_term_weights().get(f"local:{m.__class__.__name__}", 1.0))
-                # proximal gradient with projection to [0,1]
-                etas[idx] = float(max(0.0, min(1.0, etas[idx] - tau * w * g)))
-            # 2) Pairwise coupling prox/updates
-            for i, j, coup in self.couplings:
-                key = f"coup:{coup.__class__.__name__}"
-                w_c = float(self._combined_term_weights().get(key, 1.0))
-                if isinstance(coup, QuadraticCoupling):
-                    etas[i], etas[j] = prox_quadratic_pair(etas[i], etas[j], coup.weight * w_c, tau)
-                elif isinstance(coup, DirectedHingeCoupling):
-                    etas[i], etas[j] = prox_asym_hinge_pair(
-                        etas[i], etas[j], weight=coup.weight * w_c, alpha=1.0, beta=1.0, tau=tau
-                    )
-                elif isinstance(coup, AsymmetricHingeCoupling):
-                    etas[i], etas[j] = prox_asym_hinge_pair(
-                        etas[i], etas[j], weight=coup.weight * w_c, alpha=coup.alpha_i, beta=coup.beta_j, tau=tau
-                    )
-                elif isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
-                    # Prox for linear gate term on variable i (j unaffected)
-                    gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
-                    # For F = ... + gi*η_i (since gi = ∂F/∂η_i), prox uses coeff = -gi
-                    coeff = -float(gi) * w_c
-                    etas[i] = prox_linear_gate(etas[i], coeff, tau)
-                # else: no-op for unknown types
-            # Check invariants and acceptance
-            if self.enforce_invariants:
-                self._check_invariants(etas)
-            F = self._energy_value(etas)
-            if F > prev_energy + 1e-12:
-                break
-            self._emit_eta(etas)
-            self._emit_energy(F)
-            prev_energy = F
-        return etas
-
-    def _prox_quadratic_pair(self, x0: float, y0: float, weight: float, tau: float) -> tuple[float, float]:
-        return prox_quadratic_pair(x0, y0, weight, tau)
-
-    def _prox_asym_hinge_pair(self, x0: float, y0: float, weight: float, alpha: float, beta: float, tau: float) -> tuple[float, float]:
-        return prox_asym_hinge_pair(x0, y0, weight, alpha, beta, tau)
-
-    def _relax_etas_proximal_star(self, etas0: List[OrderParameter], steps: int, tau: float) -> List[OrderParameter]:
-        assert tau > 0.0, "prox tau must be positive"
-        etas = [float(e) for e in etas0]
-        self._ensure_adjacency(len(etas))
-        prev_energy = self._energy_value(etas)
-        self._emit_eta(etas)
-        self._emit_energy(prev_energy)
-        for _ in range(steps):
-            cw = self._combined_term_weights()
-            for center in range(len(self.modules)):
-                block_vals = self._prox_star_block(center, etas, tau, cw)
-                for idx, val in block_vals.items():
-                    etas[idx] = float(max(0.0, min(1.0, val)))
-            if self.enforce_invariants:
-                self._check_invariants(etas)
-            F = self._energy_value(etas)
-            if F > prev_energy + 1e-12:
-                break
-            self._emit_eta(etas)
-            self._emit_energy(F)
-            prev_energy = F
-        return etas
-
-    def _prox_star_block(self, center: int, etas: List[OrderParameter], tau: float, cw: dict[str, float]) -> dict[int, float]:
-        assert self._adjacency is not None
-        block: List[int] = [center]
-        for neighbor, _ in self._adjacency[center]:
-            if 0 <= neighbor < len(etas):
-                block.append(int(neighbor))
-        block = sorted(set(block))
-        updated: dict[int, float] = {}
-        for idx in block:
-            updated[idx] = self._prox_local_single(idx, etas[idx], tau, cw)
-        for i, j, coup in self.couplings:
-            if i not in block or j not in block:
-                continue
-            key = f"coup:{coup.__class__.__name__}"
-            w_c = float(cw.get(key, 1.0))
-            xi = updated.get(i, etas[i])
-            xj = updated.get(j, etas[j])
-            if isinstance(coup, QuadraticCoupling):
-                xi, xj = prox_quadratic_pair(xi, xj, coup.weight * w_c, tau)
-            elif isinstance(coup, DirectedHingeCoupling):
-                xi, xj = prox_asym_hinge_pair(xi, xj, coup.weight * w_c, alpha=1.0, beta=1.0, tau=tau)
-            elif isinstance(coup, AsymmetricHingeCoupling):
-                xi, xj = prox_asym_hinge_pair(xi, xj, coup.weight * w_c, alpha=coup.alpha_i, beta=coup.beta_j, tau=tau)
-            elif isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
-                gi, _ = coup.d_coupling_energy_d_etas(xi, xj, self.constraints)
-                coeff = -float(gi) * w_c
-                xi = prox_linear_gate(xi, coeff, tau)
-            else:
-                continue
-            updated[i] = float(max(0.0, min(1.0, xi)))
-            updated[j] = float(max(0.0, min(1.0, xj)))
-        return updated
-
-    def _prox_local_single(self, idx: int, eta_i: float, tau: float, cw: dict[str, float]) -> float:
-        module = self.modules[idx]
-        if isinstance(module, SupportsLocalEnergyGrad):
-            grad = float(module.d_local_energy_d_eta(eta_i, self.constraints))
-        else:
-            base = float(module.local_energy(eta_i, self.constraints))
-            bumped = float(module.local_energy(min(1.0, eta_i + self.grad_eps), self.constraints))
-            grad = (bumped - base) / self.grad_eps
-        key = f"local:{module.__class__.__name__}"
-        weight = float(cw.get(key, 1.0))
-        eta_new = eta_i - tau * weight * grad
-        return float(max(0.0, min(1.0, eta_new)))
-
-    # --- ADMM (experimental) for quadratic couplings ---
     def relax_etas_admm(
         self,
         etas0: List[OrderParameter],
@@ -676,132 +602,21 @@ class EnergyCoordinator:
         rho: float = 1.0,
         step_size: float = 0.05,
     ) -> List[OrderParameter]:
-        """ADMM-like splitting primarily for quadratic couplings.
+        """Compatibility wrapper for the ADMM-like solver."""
+        warnings.warn(
+            "relax_etas_admm is deprecated; configure SolverConfig and call relax_etas",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        config = ADMMSolverConfig(
+            steps=steps,
+            rho=rho,
+            step_size=step_size,
+            gate_prox=self.solver.admm.gate_prox,
+            gate_damping=self.solver.admm.gate_damping,
+        )
+        return solve_admm(self, etas0, config)
 
-        - Introduces auxiliary variables s_k for each quadratic edge k = (i,j) to represent (η_i - η_j).
-        - Alternates:
-            s-update:  minimize w*s^2 + (ρ/2)*(s - (d_ij - u))^2   (closed form)
-            η-update:  gradient step on locals + augmented term (ρ/2)*||s - (η_i-η_j) + u||^2
-            u-update:  u ← u + s - (η_i - η_j)
-        - Hinge-family couplings use s ≥ 0 on gaps g = β η_j − α η_i with the same augmented residual r = s − g + u.
-        - Other couplings (e.g., gate-benefit) contribute via their gradients during η-update.
-        """
-        assert rho > 0.0 and step_size > 0.0
-        n = len(etas0)
-        etas = [float(e) for e in etas0]
-        # Track quadratic couplings' indices for s/u
-        quad_edges: list[tuple[int, int, float, int]] = []
-        # Track hinge-family couplings (directed/asymmetric) for s/u with nonnegativity
-        hinge_edges: list[tuple[int, int, float, float, float, int]] = []  # (i,j,weight,alpha,beta,edge_idx)
-        cw = self._combined_term_weights()
-        for idx, (i, j, coup) in enumerate(self.couplings):
-            if isinstance(coup, QuadraticCoupling):
-                w = float(coup.weight) * float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
-                quad_edges.append((i, j, w, idx))
-            elif isinstance(coup, DirectedHingeCoupling):
-                w = float(coup.weight) * float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
-                hinge_edges.append((i, j, w, 1.0, 1.0, idx))
-            elif isinstance(coup, AsymmetricHingeCoupling):
-                w = float(coup.weight) * float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
-                hinge_edges.append((i, j, w, float(coup.alpha_i), float(coup.beta_j), idx))
-        m = len(quad_edges)
-        s = [0.0] * m
-        u = [0.0] * m
-        mh = len(hinge_edges)
-        sh = [0.0] * mh
-        uh = [0.0] * mh
-        prev_energy = self._energy_value(etas)
-        self._emit_eta(etas)
-        self._emit_energy(prev_energy)
-        for _ in range(steps):
-            # s-update (closed form): s = ρ*(d - u) / (ρ + 2w)
-            for k, (i, j, w, _edge_idx) in enumerate(quad_edges):
-                d_ij = float(etas[i] - etas[j])
-                denom = rho + 2.0 * w
-                s[k] = (rho * (d_ij - u[k])) / (denom if denom > 0.0 else rho)
-            # hinge s-update with nonnegativity: sh = max(0, ρ*(gap - uh)/(ρ+2w))
-            for k, (i, j, w, alpha, beta, _edge_idx) in enumerate(hinge_edges):
-                gap = beta * float(etas[j]) - alpha * float(etas[i])
-                denom = rho + 2.0 * w
-                sh_k = (rho * (gap - uh[k])) / (denom if denom > 0.0 else rho)
-                sh[k] = float(max(0.0, sh_k))
-            # η-update: gradient step using locals + augmented quadratic terms (and non-quadratic couplings)
-            grads = [0.0] * n
-            # local grads
-            for idx_m, (m_module, eta_val) in enumerate(zip(self.modules, etas)):
-                w_loc = float(cw.get(f"local:{m_module.__class__.__name__}", 1.0))
-                if isinstance(m_module, SupportsLocalEnergyGrad):
-                    grads[idx_m] += w_loc * float(m_module.d_local_energy_d_eta(float(eta_val), self.constraints))
-                else:
-                    base = float(m_module.local_energy(float(eta_val), self.constraints))
-                    bumped = float(m_module.local_energy(min(1.0, float(eta_val) + self.grad_eps), self.constraints))
-                    grads[idx_m] += w_loc * ((bumped - base) / self.grad_eps)
-            # augmented terms from quadratic edges
-            for k, (i, j, _w, _edge_idx) in enumerate(quad_edges):
-                r = s[k] - (float(etas[i]) - float(etas[j])) + u[k]
-                grads[i] += -rho * r
-                grads[j] += rho * r
-            # augmented terms from hinge edges
-            for k, (i, j, _w, alpha, beta, _edge_idx) in enumerate(hinge_edges):
-                r = sh[k] - (beta * float(etas[j]) - alpha * float(etas[i])) + uh[k]
-                # ∂r/∂η_i = +alpha, ∂r/∂η_j = -beta
-                grads[i] += rho * r * alpha
-                grads[j] += -rho * r * beta
-            # non-quadratic couplings via gradients
-            for i, j, coup in self.couplings:
-                if isinstance(coup, (QuadraticCoupling, DirectedHingeCoupling, AsymmetricHingeCoupling)):
-                    continue
-                w_c = float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
-                # Optionally skip gate-benefit grads if we plan a prox-linear update instead
-                if self.admm_gate_prox and isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
-                    continue
-                if isinstance(coup, SupportsCouplingGrads):
-                    gi, gj = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
-                    grads[i] += w_c * float(gi)
-                    grads[j] += w_c * float(gj)
-                else:
-                    base = float(coup.coupling_energy(etas[i], etas[j], self.constraints))
-                    bi = float(coup.coupling_energy(min(1.0, etas[i] + self.grad_eps), etas[j], self.constraints))
-                    bj = float(coup.coupling_energy(etas[i], min(1.0, etas[j] + self.grad_eps), self.constraints))
-                    grads[i] += w_c * ((bi - base) / self.grad_eps)
-                    grads[j] += w_c * ((bj - base) / self.grad_eps)
-            # gradient step + projection
-            for i in range(n):
-                etas[i] = float(max(0.0, min(1.0, float(etas[i]) - step_size * float(grads[i]))))
-            # optional prox-linear update for gate-benefit family on gate variable (i)
-            if self.admm_gate_prox:
-                damp = float(max(0.0, min(1.0, self.admm_gate_damping)))
-                if damp > 0.0:
-                    for i, j, coup in self.couplings:
-                        if isinstance(coup, (GateBenefitCoupling, DampedGateBenefitCoupling)):
-                            w_c = float(cw.get(f"coup:{coup.__class__.__name__}", 1.0))
-                            # use analytic derivative if available to form linear prox coeff
-                            if isinstance(coup, SupportsCouplingGrads):
-                                gi, _ = coup.d_coupling_energy_d_etas(etas[i], etas[j], self.constraints)
-                                coeff = -float(gi) * w_c
-                            else:
-                                base_e = float(coup.coupling_energy(etas[i], etas[j], self.constraints))
-                                bump_e = float(coup.coupling_energy(min(1.0, etas[i] + self.grad_eps), etas[j], self.constraints))
-                                gi_fd = (bump_e - base_e) / self.grad_eps
-                                coeff = -float(gi_fd) * w_c
-                            x_old = float(etas[i])
-                            x_prox = float(prox_linear_gate(x_old, coeff, step_size))
-                            etas[i] = float(max(0.0, min(1.0, (1.0 - damp) * x_old + damp * x_prox)))
-            # u-update
-            for k, (i, j, _w, _edge_idx) in enumerate(quad_edges):
-                u[k] += s[k] - (float(etas[i]) - float(etas[j]))
-            for k, (i, j, _w, alpha, beta, _edge_idx) in enumerate(hinge_edges):
-                uh[k] += sh[k] - (beta * float(etas[j]) - alpha * float(etas[i]))
-            # acceptance guard
-            if self.enforce_invariants:
-                self._check_invariants(etas)
-            F = self._energy_value(etas)
-            if F > prev_energy + 1e-12:
-                break
-            self._emit_eta(etas)
-            self._emit_energy(F)
-            prev_energy = F
-        return etas
     def _finite_diff_grads(self, etas: List[OrderParameter]) -> List[float]:
         base = self._energy_value(etas)
         grads: List[float] = [0.0 for _ in etas]
@@ -899,65 +714,6 @@ class EnergyCoordinator:
         F = U - float(self.free_energy_temperature) * S
         return F
     
-    def relax_etas_coordinate(
-        self,
-        etas0: List[OrderParameter],
-        steps: int = 200,
-        active_tol: float = 1e-4,
-    ) -> List[OrderParameter]:
-        """Coordinate descent: update the index with largest |grad| each iteration."""
-        etas = [float(e) for e in etas0]
-        # Build adjacency
-        self._ensure_adjacency(len(etas))
-        # Initialize gradients and energy once
-        grads = self._grads(etas)
-        F = self._energy_value(etas)
-        for _ in range(steps):
-            # pick active coordinate
-            idx = int(np.argmax(np.abs(np.asarray(grads, dtype=float))))
-            g_i = float(grads[idx])
-            if abs(g_i) < active_tol:
-                break
-            # choose step length
-            step = float(self.step_size)
-            if self.normalize_grads:
-                gabs = abs(g_i)
-                if gabs > 0.0:
-                    step = step / gabs
-            eta_i_old = float(etas[idx])
-            eta_i_new = float(max(0.0, min(1.0, eta_i_old - step * g_i)))
-            if eta_i_new == eta_i_old:
-                # nothing to update
-                break
-            # local gradient delta
-            d_local_old = self._local_grad(idx, eta_i_old)
-            d_local_new = self._local_grad(idx, eta_i_new)
-            delta_gi = d_local_new - d_local_old
-            # local energy delta
-            f_local_old = self._local_energy(idx, eta_i_old)
-            f_local_new = self._local_energy(idx, eta_i_new)
-            delta_F = f_local_new - f_local_old
-            # coupling deltas on neighbors
-            for (j, coup) in self._adjacency[idx]:  # type: ignore[union-attr]
-                eta_j = float(etas[j])
-                gi_old, gj_old = self._pair_coupling_grads(coup, idx, j, eta_i_old, eta_j)
-                gi_new, gj_new = self._pair_coupling_grads(coup, idx, j, eta_i_new, eta_j)
-                delta_gi += (gi_new - gi_old)
-                grads[j] = float(grads[j] + (gj_new - gj_old))
-                # energy delta for this edge
-                f_ij_old = self._pair_coupling_energy(coup, idx, j, eta_i_old, eta_j)
-                f_ij_new = self._pair_coupling_energy(coup, idx, j, eta_i_new, eta_j)
-                delta_F += (f_ij_new - f_ij_old)
-            # commit update
-            etas[idx] = eta_i_new
-            grads[idx] = float(g_i + delta_gi)
-            F = float(F + delta_F)
-            self._emit_eta(etas)
-            energy_value = self.energy(etas)
-            if self.enforce_invariants:
-                self._check_invariants(etas, energy_value)
-        return etas
-
     def _quadratic_coupling_gradients_vectorized(self, etas: List[OrderParameter], cw: dict[str, float]) -> List[float]:
         """Vectorized accumulation of gradients for quadratic couplings."""
         n = len(etas)
@@ -1126,22 +882,6 @@ class EnergyCoordinator:
             buf[:] = np.asarray(etas, dtype=float)
         return buf
 
-    def _quadratic_energy_vectorized(self, etas: List[OrderParameter], cw: dict[str, float]) -> float:
-        cache = self._vectorized_cache
-        if cache is None or cache.quadratic_i.size == 0:
-            return 0.0
-        eta_arr = np.asarray(etas, dtype=float)
-        term_weights = (
-            np.asarray([float(cw.get(key, 1.0)) for key in cache.quadratic_term_keys], dtype=float)
-            if cache.quadratic_term_keys
-            else np.ones_like(cache.quadratic_weights)
-        )
-        weights = cache.quadratic_weights * term_weights
-        if weights.size == 0:
-            return 0.0
-        diff = eta_arr[cache.quadratic_i] - eta_arr[cache.quadratic_j]
-        return float(np.sum(weights * diff * diff))
-
     def _step_with_backtracking(self, etas: List[OrderParameter], grads: List[float], step_init: float) -> List[float]:
         F0 = self._energy_value(etas)
         step = float(step_init)
@@ -1167,30 +907,6 @@ class EnergyCoordinator:
         self._last_step_backtracks = local_bk
         self._total_backtracks += local_bk
         self._last_acceptance_reason = "armijo_failed_fallback"
-        return trial_arr.tolist()
-
-    def _coordinate_backtracking(self, etas: List[OrderParameter], idx: int, grad_i: float, step_init: float) -> List[OrderParameter]:
-        F0 = self._energy_value(etas)
-        step = float(step_init)
-        g2 = float(grad_i * grad_i)
-        local_bk = 0
-        for _ in range(self.max_backtrack + 1):
-            trial_arr = self._trial_array_for(etas)
-            trial_arr[idx] = float(max(0.0, min(1.0, trial_arr[idx] - step * grad_i)))
-            trial = trial_arr.tolist()
-            F1 = self._energy_value(trial)
-            if F1 <= F0 - self.armijo_c * step * g2:
-                self._last_step_backtracks = local_bk
-                self._total_backtracks += local_bk
-                self._last_acceptance_reason = "armijo_coord_accepted"
-                return trial
-            step *= self.backtrack_factor
-            local_bk += 1
-        trial_arr = self._trial_array_for(etas)
-        trial_arr[idx] = float(max(0.0, min(1.0, trial_arr[idx] - step_init * grad_i)))
-        self._last_step_backtracks = local_bk
-        self._total_backtracks += local_bk
-        self._last_acceptance_reason = "armijo_coord_failed_fallback"
         return trial_arr.tolist()
 
     def _estimate_lipschitz_bound(self, etas: List[OrderParameter]) -> float:
@@ -1234,6 +950,16 @@ class EnergyCoordinator:
             }
         diag = np.zeros(n, dtype=float)
         offsum = np.zeros(n, dtype=float)
+        probe_epsilon = max(self.grad_eps * 0.5, 1e-6)
+        for index, eta in enumerate(etas):
+            lower = max(0.0, min(1.0, float(eta) - probe_epsilon))
+            upper = max(0.0, min(1.0, float(eta) + probe_epsilon))
+            width = upper - lower
+            if width <= 0.0:
+                continue
+            curvature = (self._local_grad(index, upper) - self._local_grad(index, lower)) / width
+            if math.isfinite(curvature) and curvature > 0.0:
+                diag[index] += float(curvature)
         # Per-row, per-family contributions to row sum
         per_row_family = {}  # row -> {family_key: contrib}
         for r in range(n):
@@ -1315,16 +1041,9 @@ class EnergyCoordinator:
             target_L = L_est
         row_targets = {}
         row_margins = {}
-        if L_est > 0.0 and target_L < L_est:
-            scale = target_L / L_est
-            for r in range(n):
-                target_row = float(row_sums[r] * scale)
-                row_targets[r] = target_row
-                row_margins[r] = max(0.0, target_row - float(row_sums[r]))
-        else:
-            for r in range(n):
-                row_targets[r] = float(row_sums[r])
-                row_margins[r] = 0.0
+        for r in range(n):
+            row_targets[r] = float(target_L)
+            row_margins[r] = max(0.0, float(target_L - row_sums[r]))
         global_margin = max(0.0, float(target_L - L_est))
 
         # Family costs: max row contribution for each family
@@ -1348,8 +1067,6 @@ class EnergyCoordinator:
             "edge_costs": {int(k): float(v) for k, v in edge_costs.items()},
         }
 
-    # (uncertainty-gated gate cost application removed)
-
     def _record_energy_history(self, energy: float) -> None:
         self._accepted_energy_history.append(float(energy))
         if len(self._accepted_energy_history) > 256:
@@ -1358,36 +1075,34 @@ class EnergyCoordinator:
     def last_relaxation_metrics(self) -> Mapping[str, Any]:
         """Expose basic observability for the most recent relaxation run."""
         history = list(self._accepted_energy_history)
+        guard_transitions = [
+            {
+                "objective_version": int(version),
+                "energy_before": float(before),
+                "energy_after": float(after),
+            }
+            for version, before, after in self._guard_energy_transitions
+        ]
         return {
             "accepted_steps": len(history),
+            "rejected_steps": int(self._rejected_steps),
+            "attempted_steps": len(self._attempt_energy_history),
             "energy_trace": history,
+            "attempt_energy_trace": list(self._attempt_energy_history),
+            "objective_version": int(self._objective_version),
+            "guard_transitions": guard_transitions,
             "last_energy_drop_ratio": float(self._last_energy_drop_ratio),
             "last_contraction_margin": self._last_contraction_margin,
             "contraction_margins": list(self._contraction_margin_history),
         }
 
-    def _update_uncertainty_gate_scale(self) -> None:
-        if not self._accepted_energy_history:
-            return
-        metrics = compute_agm_phase_metrics(self._accepted_energy_history)
-        summary = compute_uncertainty_metrics(self._accepted_energy_history)
-        target_scale = 1.0
-        if (
-            metrics["rate"] >= self.gate_rate_exploit_threshold
-            and summary.total <= self.gate_uncertainty_relax_threshold
-        ):
-            target_scale = self.gate_cost_relax_scale
-        elif (
-            metrics["rate"] <= self.gate_rate_explore_threshold
-            or summary.total >= self.gate_uncertainty_tight_threshold
-        ):
-            target_scale = self.gate_cost_tighten_scale
-        smoothing = min(max(self.gate_cost_smoothing, 0.0), 1.0)
-        self._gate_uncertainty_scale = (
-            (1.0 - smoothing) * self._gate_uncertainty_scale + smoothing * target_scale
-        )
-        if self._gate_uncertainty_scale < 0.0:
-            self._gate_uncertainty_scale = 0.0
+    def last_solver_metrics(self) -> Mapping[str, Any]:
+        """Return mode-specific metrics for the most recent solver run."""
+        if self.solver.mode == SolverMode.GRADIENT:
+            metrics = dict(self.last_relaxation_metrics())
+            metrics["solver_mode"] = "gradient"
+            return metrics
+        return dict(self._last_solver_metrics)
 
     def _emit_eta(self, etas: List[OrderParameter]) -> None:
         for cb in self.on_eta_updated:
@@ -1527,11 +1242,6 @@ class EnergyCoordinator:
             return range(len(etas))
         return tuple(sorted(active))
 
-    def _local_energy(self, idx: int, eta_i: float) -> float:
-        m = self.modules[idx]
-        w = float(self._combined_term_weights().get(f"local:{m.__class__.__name__}", 1.0))
-        return float(w * m.local_energy(float(eta_i), self.constraints))
-
     def _local_grad(self, idx: int, eta_i: float) -> float:
         m = self.modules[idx]
         w = float(self._combined_term_weights().get(f"local:{m.__class__.__name__}", 1.0))
@@ -1540,30 +1250,6 @@ class EnergyCoordinator:
         base = float(m.local_energy(eta_i, self.constraints))
         b = float(m.local_energy(min(1.0, eta_i + self.grad_eps), self.constraints))
         return float(w * ((b - base) / self.grad_eps))
-
-    def _pair_coupling_energy(self, coup: EnergyCoupling, i: int, j: int, eta_i: float, eta_j: float) -> float:
-        w = float(self._combined_term_weights().get(f"coup:{coup.__class__.__name__}", 1.0))
-        return float(w * coup.coupling_energy(float(eta_i), float(eta_j), self.constraints))
-
-    def _pair_coupling_grads(
-        self,
-        coup: EnergyCoupling,
-        i: int,
-        j: int,
-        eta_i: float,
-        eta_j: float,
-    ) -> Tuple[float, float]:
-        if isinstance(coup, SupportsCouplingGrads):
-            gi, gj = coup.d_coupling_energy_d_etas(float(eta_i), float(eta_j), self.constraints)
-            w = float(self._combined_term_weights().get(f"coup:{coup.__class__.__name__}", 1.0))
-            return float(w * gi), float(w * gj)
-        base = float(coup.coupling_energy(eta_i, eta_j, self.constraints))
-        bi = float(coup.coupling_energy(min(1.0, eta_i + self.grad_eps), eta_j, self.constraints))
-        bj = float(coup.coupling_energy(eta_i, min(1.0, eta_j + self.grad_eps), self.constraints))
-        w = float(self._combined_term_weights().get(f"coup:{coup.__class__.__name__}", 1.0))
-        gi = (bi - base) / self.grad_eps
-        gj = (bj - base) / self.grad_eps
-        return float(w * gi), float(w * gj)
 
     def _combined_term_weights(self) -> dict[str, float]:
         base_tw: dict[str, float] = {}
@@ -1647,8 +1333,41 @@ class EnergyCoordinator:
         assert self.grad_eps > 0.0, "grad_eps must be > 0"
         assert self.step_size > 0.0, "step_size must be > 0"
         if self.noise_mode is not None:
-            allowed_noise_modes = {"none", "isotropic", "orthogonal", "precision_orthogonal", "metric_orthogonal"}
+            allowed_noise_modes = {
+                "none",
+                "isotropic",
+                "orthogonal",
+                "precision_orthogonal",
+                "metric_orthogonal",
+                "metric_precision_orthogonal",
+            }
             assert str(self.noise_mode).lower() in allowed_noise_modes, f"noise_mode must be one of {allowed_noise_modes}"
+        configured_noise_mode = (
+            str(self.noise_mode).lower()
+            if self.noise_mode is not None
+            else (
+                "metric_precision_orthogonal"
+                if self.metric_aware_noise_controller and self.precision_aware_noise_controller
+                else "metric_orthogonal" if self.metric_aware_noise_controller else None
+            )
+        )
+        if configured_noise_mode in {"metric_orthogonal", "metric_precision_orthogonal"}:
+            assert self.metric_matrix is not None or self.metric_solve is not None, (
+                "metric-aware noise requires metric_matrix or metric_solve"
+            )
+            assert not (self.metric_matrix is not None and self.metric_solve is not None), (
+                "provide metric_matrix or metric_solve, not both"
+            )
+        if self.metric_matrix is not None:
+            metric = np.asarray(self.metric_matrix, dtype=float)
+            expected_shape = (len(self.modules), len(self.modules))
+            assert metric.shape == expected_shape, f"metric_matrix must have shape {expected_shape}"
+            assert np.all(np.isfinite(metric)), "metric_matrix must contain finite values"
+            assert np.allclose(metric, metric.T, rtol=0.0, atol=1e-12), "metric_matrix must be symmetric"
+            try:
+                np.linalg.cholesky(metric)
+            except np.linalg.LinAlgError as exc:
+                raise AssertionError("metric_matrix must be positive definite") from exc
         assert 0.0 < self.armijo_c < 1.0, "armijo_c must be between 0 and 1"
         assert 0.0 < self.backtrack_factor < 1.0, "backtrack_factor must be in (0,1)"
         assert self.max_backtrack >= 0, "max_backtrack must be non-negative"
@@ -1665,7 +1384,3 @@ class EnergyCoordinator:
             assert -tol <= eta <= 1.0 + tol, "η out of bounds"
         if energy_value is not None:
             assert math.isfinite(energy_value), "Energy must be finite"
-
-    # (sensitivity probes / escape / confidence APIs removed)
-
-

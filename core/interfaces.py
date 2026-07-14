@@ -5,7 +5,7 @@ Exposes strict typed Protocols for modules and couplings.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol, runtime_checkable, Tuple, List
+from typing import Any, Mapping, Protocol, runtime_checkable, Tuple
 
 __all__ = [
     "OrderParameter",
@@ -91,16 +91,15 @@ class SupportsCouplingCurvature(Protocol):
 @runtime_checkable
 class SupportsPrecision(Protocol):
     """Optional interface for modules exposing local stiffness/curvature.
-    
-    This enables precision-aware optimization (Gaussian Belief Propagation style),
-    where steps are scaled by the inverse curvature (uncertainty).
+
+    The coordinator uses this value for diagonal preconditioning, curvature
+    bounds, and precision-scaled exploration.
     """
 
     def curvature(self, eta: OrderParameter) -> float:
-        """Returns the local stiffness (2nd derivative) at eta.
-        
-        High curvature = High Certainty = Stiff Spring.
-        Low curvature = Low Certainty = Loose Spring (Slack).
+        """Return the local stiffness (second derivative) at ``eta``.
+
+        Larger values produce smaller preconditioned updates and noise scales.
         """
         ...
 

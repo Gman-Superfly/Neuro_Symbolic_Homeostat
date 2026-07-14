@@ -233,15 +233,21 @@ def test_rejected_step_restores_previous_etas() -> None:
         enable_orthogonal_noise=False,
         noise_mode="none",
         step_size=3.0,
-        assert_monotonic_energy=False,
     )
     etas0 = [0.6]
     initial_energy = _energy(coord, etas0)
+    eta_events: List[List[float]] = []
+    energy_events: List[float] = []
+    coord.on_eta_updated.append(lambda values: eta_events.append(list(values)))
+    coord.on_energy_updated.append(lambda value: energy_events.append(float(value)))
 
     etas1 = coord.relax_etas(list(etas0), steps=1)
-    final_energy = _energy(coord, etas1)
 
     assert getattr(coord, "_rejected_steps") == 1
     assert math.isclose(etas1[0], etas0[0], rel_tol=0.0, abs_tol=1e-12)
+    assert eta_events == []
+    assert energy_events == []
+    assert coord.last_relaxation_metrics()["accepted_steps"] == 0
+    final_energy = _energy(coord, etas1)
     assert final_energy <= initial_energy + 1e-12
 

@@ -15,9 +15,10 @@ These tests validate two claims from the paper's relaxation mechanism:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Mapping
+from typing import Any, List, Mapping, Tuple
 
 import math
+import numpy as np
 
 from core.coordinator import EnergyCoordinator
 from core.couplings import DirectedHingeCoupling, QuadraticCoupling
@@ -44,6 +45,89 @@ class QuadraticModule(EnergyModule, SupportsLocalEnergyGrad, SupportsPrecision):
 
     def curvature(self, eta: OrderParameter) -> float:  # type: ignore[override]
         return self.stiffness
+
+
+@dataclass(frozen=True)
+class ScaledQuadraticCoupling:
+    """Custom quadratic coupling used to validate the curvature protocol."""
+
+    weight: float
+    scale_i: float
+    scale_j: float
+
+    def coupling_energy(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> float:
+        del constraints
+        residual = self.scale_i * float(eta_i) - self.scale_j * float(eta_j)
+        return 0.5 * self.weight * residual * residual
+
+    def d_coupling_energy_d_etas(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float]:
+        del constraints
+        residual = self.scale_i * float(eta_i) - self.scale_j * float(eta_j)
+        return (
+            self.weight * self.scale_i * residual,
+            -self.weight * self.scale_j * residual,
+        )
+
+    def coupling_curvature_bounds(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float, float]:
+        del eta_i, eta_j, constraints
+        return (
+            self.weight * self.scale_i * self.scale_i,
+            self.weight * self.scale_j * self.scale_j,
+            self.weight * abs(self.scale_i * self.scale_j),
+        )
+
+
+@dataclass(frozen=True)
+class UnderreportedQuadraticCoupling:
+    """Quadratic edge with a deliberately invalid curvature report."""
+
+    weight: float
+    report_fraction: float
+
+    def coupling_energy(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> float:
+        del constraints
+        diff = float(eta_i) - float(eta_j)
+        return self.weight * diff * diff
+
+    def d_coupling_energy_d_etas(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float]:
+        del constraints
+        grad = 2.0 * self.weight * (float(eta_i) - float(eta_j))
+        return grad, -grad
+
+    def coupling_curvature_bounds(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float, float]:
+        del eta_i, eta_j, constraints
+        reported = 2.0 * self.weight * self.report_fraction
+        return reported, reported, reported
 
 
 def _iters_to_converge(
@@ -107,6 +191,73 @@ def test_lipschitz_curvature_not_underestimated_at_box_edge() -> None:
     assert math.isclose(l_edge_high, stiffness, rel_tol=1e-6, abs_tol=1e-6)
     assert l_edge_low >= 0.99 * l_interior
     assert l_edge_high >= 0.99 * l_interior
+
+
+def test_composed_gershgorin_bound_covers_random_quadratic_graph_hessians() -> None:
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        size = int(rng.integers(3, 10))
+        stiffness = rng.uniform(0.1, 3.0, size=size)
+        modules = [QuadraticModule(target=float(rng.uniform()), stiffness=float(value)) for value in stiffness]
+        couplings = []
+        hessian = np.diag(stiffness)
+        for i in range(size):
+            for j in range(i + 1, size):
+                if rng.uniform() > 0.45:
+                    continue
+                weight = float(rng.uniform(0.05, 1.5))
+                couplings.append((i, j, QuadraticCoupling(weight=weight)))
+                hessian[i, i] += 2.0 * weight
+                hessian[j, j] += 2.0 * weight
+                hessian[i, j] -= 2.0 * weight
+                hessian[j, i] -= 2.0 * weight
+
+        coord = EnergyCoordinator(
+            modules=modules,
+            couplings=couplings,
+            constraints={},
+            use_analytic=True,
+            noise_mode="none",
+            stability_guard=True,
+        )
+        state = [float(value) for value in rng.uniform(0.0, 1.0, size=size)]
+        estimate = float(coord._estimate_lipschitz_bound(state))  # type: ignore[attr-defined]
+        lambda_max = float(np.max(np.linalg.eigvalsh(hessian)))
+
+        assert estimate + 1e-8 >= lambda_max
+        alpha = 0.9 * 2.0 / estimate
+        spectral_radius = float(np.max(np.abs(np.linalg.eigvals(np.eye(size) - alpha * hessian))))
+        assert spectral_radius < 1.0
+
+
+def test_custom_coupling_curvature_protocol_composes_end_to_end() -> None:
+    custom = ScaledQuadraticCoupling(weight=1.7, scale_i=1.3, scale_j=0.6)
+    modules = [QuadraticModule(target=0.2, stiffness=0.8), QuadraticModule(target=0.7, stiffness=1.1)]
+    coord = EnergyCoordinator(
+        modules=modules,
+        couplings=[(0, 1, custom)],
+        constraints={},
+        use_analytic=True,
+        noise_mode="none",
+        stability_guard=True,
+    )
+    state = [0.9, 0.1]
+    hessian = np.array(
+        [
+            [0.8 + custom.weight * custom.scale_i**2, -custom.weight * custom.scale_i * custom.scale_j],
+            [-custom.weight * custom.scale_i * custom.scale_j, 1.1 + custom.weight * custom.scale_j**2],
+        ],
+        dtype=float,
+    )
+
+    estimate = float(coord._estimate_lipschitz_bound(state))  # type: ignore[attr-defined]
+    coord._update_precision_cache(state)  # type: ignore[attr-defined]
+    precision = np.asarray(coord.get_precision_diagonal(), dtype=float)
+
+    assert estimate + 1e-8 >= float(np.max(np.linalg.eigvalsh(hessian)))
+    assert np.allclose(precision, np.diag(hessian), rtol=0.0, atol=1e-10)
+    result = coord.relax_etas(state, steps=20)
+    assert coord.energy(result) <= coord.energy(state)
 
 
 def test_preconditioning_converges_faster_on_ill_conditioned_problem() -> None:
@@ -248,3 +399,38 @@ def test_gershgorin_cap_can_be_conservative_on_mixed_preconditioned_problem() ->
     assert getattr(no_guard, "_rejected_steps") == 0
     assert getattr(guarded, "_rejected_steps") == 0
     assert energy_no_guard <= energy_guarded
+
+
+def test_underreported_custom_curvature_is_caught_by_monotone_restoration() -> None:
+    """An invalid curvature report voids the cap but not state restoration."""
+    modules = [
+        QuadraticModule(target=0.5, stiffness=1.0),
+        QuadraticModule(target=0.5, stiffness=1.0),
+    ]
+    coupling = UnderreportedQuadraticCoupling(weight=8.0, report_fraction=0.1)
+    coord = EnergyCoordinator(
+        modules=modules,
+        couplings=[(0, 1, coupling)],
+        constraints={},
+        use_analytic=True,
+        use_precision_preconditioning=False,
+        stability_guard=True,
+        auto_step_from_lipschitz=True,
+        stability_cap_fraction=0.9,
+        noise_mode="none",
+        assert_monotonic_energy=True,
+        continue_after_rejection=True,
+    )
+    initial = [0.9, 0.1]
+    estimated_l = float(coord._estimate_lipschitz_bound(initial))  # type: ignore[attr-defined]
+    true_l = 33.0
+
+    assert estimated_l < true_l
+    assert 0.9 * 2.0 / estimated_l > 2.0 / true_l
+
+    output = coord.relax_etas(list(initial), steps=5)
+    metrics = coord.last_relaxation_metrics()
+
+    assert np.allclose(output, initial, rtol=0.0, atol=1e-12)
+    assert metrics["accepted_steps"] == 0
+    assert metrics["rejected_steps"] == 5

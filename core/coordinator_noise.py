@@ -19,6 +19,8 @@ def resolved_noise_mode(coordinator: Any) -> str:
         if mode == "none":
             return "none"
         return mode
+    if coordinator.precision_aware_noise_controller and coordinator.metric_aware_noise_controller:
+        return "metric_precision_orthogonal"
     if coordinator.precision_aware_noise_controller:
         return "precision_orthogonal"
     if coordinator.metric_aware_noise_controller:
@@ -44,19 +46,19 @@ def build_noise_vector(
 
     if mode == "isotropic":
         noise_vector = np.asarray(raw_noise, dtype=float)
-    elif mode == "metric_orthogonal":
+    elif mode in {"metric_orthogonal", "metric_precision_orthogonal"}:
         noise_vector = project_noise_metric_orthogonal(
             raw_noise,
             grad_vector,
             M=coordinator.metric_matrix,
-            Mv=coordinator.metric_vector_product,
+            metric_solve=coordinator.metric_solve,
         )
     elif mode in {"orthogonal", "precision_orthogonal"}:
         noise_vector = project_noise_orthogonal(raw_noise, grad_vector)
     else:
         raise ValueError(f"Unknown noise_mode: {coordinator.noise_mode!r}")
 
-    if mode == "precision_orthogonal":
+    if mode in {"precision_orthogonal", "metric_precision_orthogonal"}:
         curv_diag = np.asarray(coordinator.get_precision_diagonal(), dtype=float)
         if isinstance(coordinator._noise_controller, PrecisionNoiseController) and hasattr(  # noqa: SLF001
             coordinator._noise_controller,  # noqa: SLF001
@@ -70,7 +72,16 @@ def build_noise_vector(
             inv = 1.0 / (float(coordinator.precision_epsilon) + np.maximum(curv_diag, 0.0))
             inv_norm = float(np.linalg.norm(inv))
             weights = inv / inv_norm if inv_norm > 0.0 else inv
-        noise_vector = project_noise_orthogonal(weights * noise_vector, grad_vector)
+        weighted_noise = weights * noise_vector
+        if mode == "metric_precision_orthogonal":
+            noise_vector = project_noise_metric_orthogonal(
+                weighted_noise,
+                grad_vector,
+                M=coordinator.metric_matrix,
+                metric_solve=coordinator.metric_solve,
+            )
+        else:
+            noise_vector = project_noise_orthogonal(weighted_noise, grad_vector)
 
     noise_norm = np.linalg.norm(noise_vector)
     if noise_norm <= 1e-9:

@@ -48,31 +48,18 @@ def main() -> None:
         ax1.plot(alloc_total, label="alloc:total", color="tab:green", alpha=0.7)
     if cost_total is not None:
         ax1.plot(cost_total, label="cost:total", color="tab:red", alpha=0.5)
-    # Right axis for contraction margin and homotopy signals (if present)
+    # Right axis for contraction margin when present.
     has_margin = "contraction_margin" in df.columns
-    has_homo_scale = "homotopy_scale" in df.columns
-    has_homo_backoffs = "homotopy_backoffs" in df.columns
-    if has_margin or has_homo_scale or has_homo_backoffs:
+    if has_margin:
         ax2 = ax1.twinx()
-        lines2, labels2 = [], []
-        if has_margin:
-            l1 = ax2.plot(df["contraction_margin"], label="contraction_margin", color="tab:orange", alpha=0.6)
-            lines2 += l1
-            labels2 += ["contraction_margin"]
-        if has_homo_scale:
-            l2 = ax2.plot(df["homotopy_scale"], label="homotopy_scale", color="tab:purple", alpha=0.6, linestyle="--")
-            lines2 += l2
-            labels2 += ["homotopy_scale"]
-        if has_homo_backoffs:
-            # Plot backoffs as a step line (scaled if large)
-            try:
-                backoffs = df["homotopy_backoffs"]
-                l3 = ax2.plot(backoffs, label="homotopy_backoffs", color="tab:gray", alpha=0.6, linestyle=":")
-                lines2 += l3
-                labels2 += ["homotopy_backoffs"]
-            except Exception:
-                pass
-        ax2.set_ylabel("contraction_margin / homotopy")
+        lines2 = ax2.plot(
+            df["contraction_margin"],
+            label="contraction_margin",
+            color="tab:orange",
+            alpha=0.6,
+        )
+        labels2 = ["contraction_margin"]
+        ax2.set_ylabel("contraction margin")
     else:
         lines2, labels2 = [], []
     ax1.set_xlabel("step")

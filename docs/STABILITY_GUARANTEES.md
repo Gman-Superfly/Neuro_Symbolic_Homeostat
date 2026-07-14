@@ -2,15 +2,13 @@
 
 ## Overview
 
-This document explains the stability conditions used by this framework, how to enable them, and how to interpret telemetry.
+This document describes the stability controls used by the current repository. The implemented mechanism is a conservative step cap plus accepted-step checks. In quadratic and SPD regimes, the cap follows the standard gradient-descent condition. In mixed regimes, the same machinery is a guard and telemetry path, not a proof of nonlinear convergence.
 
-**Status**: validated on synthetic scenarios and local tests in this repository
-
----
+Status: implemented and tested on the synthetic scenarios in `tests/` and `experiments/`.
 
 ## Quick start
 
-### Enable stability guard
+Enable the stability guard when coupling strength or curvature is uncertain:
 
 ```python
 from core.coordinator import EnergyCoordinator
@@ -19,17 +17,17 @@ coord = EnergyCoordinator(
     modules=my_modules,
     couplings=my_couplings,
     constraints={},
-    stability_guard=True,          # Enable Lyapunov-style step capping
-    stability_cap_fraction=0.9,    # Use 90% of the 2/L bound
-    log_contraction_margin=True,   # Log step margin
-    warn_on_margin_shrink=True,    # Emit warnings when margin drops
-    margin_warn_threshold=1e-6,    # Warning threshold
+    stability_guard=True,
+    stability_cap_fraction=0.9,
+    log_contraction_margin=True,
+    warn_on_margin_shrink=True,
+    margin_warn_threshold=1e-6,
 )
 
 etas = coord.relax_etas(etas0, steps=50)
 ```
 
-### Enable SmallGain allocator (recommended)
+The Small-Gain adapter is optional. Use it when an experiment needs adaptive coupling weights under the same margin telemetry:
 
 ```python
 from core.weight_adapters import SmallGainWeightAdapter
@@ -42,692 +40,140 @@ coord = EnergyCoordinator(
         budget_fraction=0.7,
         max_step_change=0.10,
     ),
-    stability_guard=True,  # Required for margin tracking
+    stability_guard=True,
+    expose_lipschitz_details=True,
 )
 ```
 
----
+## Implemented contract
 
-## What are the stability bounds?
+The coordinator estimates a conservative row-sum Lipschitz bound:
 
-### The problem
+```text
+L_hat = max_i (d_i + sum_j |c_ij|)
+```
 
-In standard gradient descent, step sizes are chosen heuristically:
-- Too small → slow convergence
-- Too large → divergence (energy explodes)
+Here `d_i` is the local curvature contribution for coordinate `i`, and `c_ij` is the coupling curvature contribution between coordinates. Modules can report local curvature through `SupportsPrecision.curvature`. Couplings can report row-wise curvature through `SupportsCouplingCurvature.coupling_curvature_bounds`. Built-in quadratic and active hinge couplings also contribute curvature directly.
 
-**Goal**: use conservative conditions that bound updates in supported regimes and add runtime guards elsewhere.
+Given a requested step size `alpha_requested`, the guard uses:
 
-### The solution: step caps and acceptance checks
+```text
+alpha_used = min(alpha_requested, stability_cap_fraction * 2 / L_hat)
+```
 
-In linear and SPD settings the coordinator treats energy \( F(η) \) as a Lyapunov-style function and enforces accepted-step non-increase:
+If `auto_step_from_lipschitz=True`, then the requested step is set from the same bound. If a trial step increases the guarded objective, then the coordinator rejects the step and restores the previous accepted order parameters.
 
-\[
-F(η^{k+1}) \leq F(η^k) \quad \forall k
-\]
+Boundary: the cap is a sufficient condition only when `L_hat` upper-bounds the true gradient Lipschitz constant. The accepted-step check protects the current run from harmful trial steps, but it does not turn mixed nonlinear constraints into a global convergence proof.
 
-**How**: by capping step size from a conservative estimate of the Lipschitz constant of \( \nabla F \), then rejecting and restoring steps that still increase the guarded objective.
+## Mathematical scope
 
----
+For an L-smooth deterministic objective, gradient descent with `alpha < 2/L` gives:
 
-## Mathematical foundation
+```text
+F(x_next) <= F(x) - alpha * (1 - alpha * L / 2) * ||grad F(x)||^2
+```
 
-### Lipschitz constant
+The right-hand term is non-positive when `alpha < 2/L`, so the step decreases or preserves energy under the stated smoothness assumption.
 
-The gradient \( \nabla F(η) \) is **L-Lipschitz** if:
+In the quadratic/SPD case, if `L_hat >= lambda_max(H)` and `alpha_used < 2 / L_hat`, then the iteration matrix `I - alpha_used * H` is contractive. In mixed hinge, gate, and product-coupling regimes, the repository treats this as a conservative step rule plus rejection guard.
 
-\[
-\|\nabla F(x) - \nabla F(y)\| \leq L \|x - y\|
-\]
+## Observed regimes
 
-**Physical Meaning**: L measures the "stiffest spring" in the system. High L = tight constraints.
-
-### Gradient descent convergence theorem
-
-If \( \nabla F \) is L-Lipschitz and we use step size \( \alpha < 2/L \), then:
-
-\[
-F(η^{k+1}) \leq F(η^k) - \alpha (1 - \frac{\alpha L}{2}) \|\nabla F(η^k)\|^2
-\]
-
-**Proof of non-increase**: The term \( (1 - \alpha L/2) > 0 \) when \( \alpha < 2/L \).
-
-### Our implementation
-
-We estimate L using a **Gershgorin-style bound**, a conservative upper bound:
-
-\[
-L \leq \sum_i |F_{i,local}''(η_i)| + \sum_{(i,j)} |F_{ij,coupling}''|
-\]
-
-Then cap step size:
-
-\[
-\alpha_{\text{cap}} = 0.9 \cdot \frac{2}{L}
-\]
-
-(The 0.9 factor = `stability_cap_fraction` provides additional margin.)
-
-## What is standard, and what is repository specific
-
-The stability mathematics here follows standard results:
-- gradient descent condition \( \alpha < 2/L \),
-- Gershgorin row-sum bounds for conservative spectral control,
-- diagonal preconditioning for stiffness-aware coordinate scaling.
-
-The repository-specific design is the composable curvature contract:
-- modules expose local curvature with `SupportsPrecision.curvature`,
-- couplings expose row-wise curvature bounds with `SupportsCouplingCurvature.coupling_curvature_bounds`,
-- the coordinator composes these values into one precision cache and one Lipschitz estimate used by preconditioning, step capping, and precision-aware noise control.
-
-## Observed regime boundary from tests
-
-The current test suite records two regimes.
-
-### Tight-bound regime, curvature awareness changes the outcome
+The current tests record two useful boundaries.
 
 `tests/test_precision_conditioning.py::test_curvature_awareness_converges_where_plain_gd_stalls_above_2_over_L`
 
-- Coupled quadratic pair with \(\lambda_{\max}=33\), so \(2/L = 0.0606\).
-- Requested step \(0.1\) lies above that threshold.
-- Plain gradient descent stalls after rejection.
-- Curvature-aware modes, diagonal preconditioning or stability guard capping, converge.
-
-### Conservative-bound regime, guard can trade speed for margin
+- Coupled quadratic pair with `lambda_max = 33`, so `2 / L = 0.0606`.
+- Requested step `0.1` lies above that threshold.
+- Plain gradient descent is rejected and stalls.
+- Diagonal preconditioning or the Gershgorin step cap converges in this synthetic setting.
 
 `tests/test_precision_conditioning.py::test_gershgorin_cap_can_be_conservative_on_mixed_preconditioned_problem`
 
 - Mixed sum, product, and hinge couplings.
-- Initial Gershgorin cap is below requested step \(0.1\).
+- The initial cap is below requested step `0.1`.
 - Guarded and unguarded preconditioned runs both converge.
 - Over the same fixed step budget, the guarded run can end at higher final energy.
 
-## Visual: step capping and acceptance flow
+Interpretation: curvature-aware safeguards can change the outcome in tight quadratic regimes. In mixed regimes, the same guard can trade speed for margin.
 
-```
-Compute L (Gershgorin) ────────────────┐
-                                       │
-Requested α (user) ────────┐           │
-                           └─ min ──> α_used = min(α_requested, 0.9 · 2/L)
-                                                │
-Trial step: η_{k+1} = η_k − α_used · ∇F(η_k)    │
-                                                │
-                         ΔF = F_{k+1} − F_k ≤ 0 ?
-                               │                │
-                              yes              no
-                               │                │
-                         ACCEPT step      REJECT and restore η_k
-                                             (and optionally warn via margin)
-```
+## Small-Gain adapter
 
-Contraction margin gauge (step budget):
+`SmallGainWeightAdapter` ranks coupling families by a smoothed value-to-cost score. Value is approximated by gradient norm squared. Cost is the estimated increase in the Lipschitz bound. The adapter applies bounded weight changes while staying inside a global predicted-spend cap.
 
-```
-margin = (2/L) − α_used
+Current implementation boundary:
 
-0                                      (2/L)
-|███████████░░░░░░░░░░░░░░░░░|  healthy
- ^ spent (α_used)
-```
+- It enforces a global predicted-spend cap.
+- It records row margin telemetry.
+- It does not yet enforce per-edge row-incidence booking.
+- Its benefit depends on the graph and objective. The paper treats fewer steps and lower final energy as empirical outcomes, not formal guarantees.
 
----
+## Telemetry
 
-## SmallGain allocator (advanced)
+When `log_contraction_margin=True`, the coordinator records:
 
-### The problem with coupled systems
+- `contraction_margin`: `(2 / L_hat) - alpha_used`
+- `_contraction_margin_history`: recent margins
+- `_last_lipschitz_details`: row sums, row margins, global margin, family costs, and edge costs when requested
 
-In coupled systems, the Lipschitz bound \( L \) comes from **interactions** between terms. A naive global cap wastes the stability budget.
+`EnergyBudgetTracker` can log related fields:
 
-**SmallGain Idea**: Allocate the budget per-edge based on "value per Lipschitz cost".
+- `contraction_margin`
+- `margin:global`
+- `margin:row:<i>`
+- `cost:<family>`
+- `spent:global`
+- `alloc:<family>`
+- `precision:min`
+- `precision:mean`
+- `precision:max`
 
-### Implemented contract
+## Tuning guidance
 
-For a system with local terms \( F_i \) and couplings \( C_{ij} \), the coordinator estimates a conservative row-sum bound:
+If the estimated Lipschitz bound is large, then the cap can make steps small. Diagnose the bound before adding new machinery:
 
-\[
-\hat{L} = \max_i \left(d_i + \sum_{j \neq i} |c_{ij}|\right).
-\]
+1. Reduce coupling weights.
+2. Reduce `step_size`.
+3. Enable diagonal precision preconditioning or stiffness updates when modules and couplings report reliable curvature.
+4. Inspect row-level curvature telemetry for an overly conservative component bound.
+5. Lower `stability_cap_fraction` only when more margin is needed; this makes the cap stricter rather than faster.
+6. Use `SmallGainWeightAdapter` only when adaptive coupling weights are part of the experiment.
 
-The step cap is:
+If energy increases despite the guard, then inspect which extras are active. Noise, line search, adaptive term weights, and experimental ADMM paths can change the acceptance path. For a minimal stability check, use `noise_mode="none"`, `weight_adapter=None`, `stability_guard=True`, and `assert_monotonic_energy=True`.
 
-\[
-\alpha_{\mathrm{used}} = \min(\alpha_{\mathrm{requested}}, \gamma \cdot 2/\hat{L}).
-\]
+## Curvature-contract audit
 
-The SmallGain allocator receives the remaining global margin and per-row margin estimates. It ranks coupling families by a smoothed `value/cost` score, where value is approximated by gradient-norm squared and cost is the estimated Lipschitz increase. The current implementation enforces the global spend cap and records row margins for telemetry. It does not yet enforce row-incidence booking for each edge.
-
-**Scope-limited bound**: In quadratic/SPD regimes, if \(\hat{L}\) upper-bounds \(\lambda_{\max}(H)\) and \(\alpha_{\mathrm{used}} < 2/\hat{L}\), then \(\rho(I-\alpha_{\mathrm{used}}H) < 1\). The allocator stays inside the same local-linear condition only to the extent that its predicted spend remains inside the estimated margin and the acceptance guard rejects harmful trial steps.
-
----
-
-## Observability
-
-### Telemetry fields
-
-When `log_contraction_margin=True`, `EnergyBudgetTracker` emits:
-
-- `contraction_margin`: \( (2/L) - \alpha \) (step margin remaining)
-- `margin_warn`: 1 if margin < threshold, 0 otherwise
-- `spent:global`: Accumulated Lipschitz budget spent (SmallGain only)
-- `alloc:coup:<family>`: Per-family allocations (SmallGain only)
-- `cost:coup:<family>`: Per-family Lipschitz costs (SmallGain only)
-
-### Interpreting contraction margin
-
-| Margin Value | Meaning | Action |
-|--------------|---------|--------|
-| > 0.01 |  Healthy | No action needed |
-| 0.001 - 0.01 |  Tight | Consider reducing coupling weights or step size |
-| < 0.001 |  Risky | **Warning emitted**, reduce step size immediately |
-| Negative |  Unstable | System may diverge, hard cap applied automatically |
-
-### Visualization
+Run the sampled finite-difference auditor with:
 
 ```powershell
-# Plot margin over time
-uv run python -m experiments.plots.plot_budget_vs_spend --input logs\energy_budget.csv --run_id my_run
-
-# Plot gain budget (SmallGain allocator)
-uv run python -m experiments.plots.plot_gain_budget --input logs\energy_budget.csv --run_id my_run
+uv run python -m experiments.audit_curvature_contract --samples 32 --strict
 ```
 
----
-
-## Tuning for stability
-
-### Reducing Lipschitz constant
-
-**Problem**: L is too large → step sizes become tiny → slow convergence
-
-**Solutions**:
-
-1. **Reduce coupling weights**:
-   ```python
-   QuadraticCoupling(weight=0.3)  # instead of 1.0
-   ```
-
-2. **Use homotopy scheduling** (start with weak couplings):
-   ```python
-   EnergyCoordinator(
-       homotopy_coupling_scale_start=0.2,
-       homotopy_steps=20,
-   )
-   ```
-
-3. **Enable coupling auto-cap**:
-   ```python
-   EnergyCoordinator(
-       stability_coupling_auto_cap=True,
-       stability_coupling_target=10.0,  # desired max L
-   )
-   ```
-
-4. **Use polynomial bases** (can improve conditioning):
-   ```python
-   from modules.polynomial.polynomial_energy import PolynomialEnergyModule
-   mod = PolynomialEnergyModule(degree=3, basis="legendre")
-   ```
-
-### Increasing step margin
-
-**Problem**: Margin too tight → frequent warnings
-
-**Solutions**:
-
-1. **Reduce step size**:
-   ```python
-   EnergyCoordinator(step_size=0.03)  # instead of 0.05
-   ```
-
-2. **Use more conservative cap fraction**:
-   ```python
-   EnergyCoordinator(stability_cap_fraction=0.7)  # instead of 0.9
-   ```
-
-3. **Enable SmallGain allocator** (greedy margin allocation):
-   ```python
-   weight_adapter=SmallGainWeightAdapter(budget_fraction=0.6)
-   ```
-
----
-
-## Comparison: standard vs SmallGain guard
-
-| Feature | Standard `stability_guard` | SmallGain Allocator |
-|---------|---------------------------|---------------------|
-| **Lipschitz bound** | Global (single L) | Per-edge (L_ij) |
-| **Step capping** | Uniform cap for all | Adaptive per-coupling weights |
-| **Overhead** | ~5% | ~100-200% (worth it for dense graphs) |
-| **Guarantees** | Contraction if α < 2/L | Contraction if budget spent ≤ ρ |
-| **Allocation policy** | Conservative global cap | Greedy value/cost allocation |
-| **Use case** | Simple graphs, prototyping | Dense graphs and synthetic benchmarks |
-
-**Recommendation**:
-- Use standard guard for quick experiments
-- Use SmallGain for dense benchmark scenarios where its overhead is acceptable
-
----
-
-## Formal bounds and assumptions
-
-### Theorem 1: monotonic energy descent
-
-**Statement**: For deterministic gradient descent on an \(L\)-smooth objective, if the estimated \(L\) upper-bounds the true gradient Lipschitz constant and the used step satisfies \( \alpha < 2/L \), then:
-
-\[
-F(η^{k+1}) \leq F(η^k) \quad \forall k
-\]
-
-**Proof Sketch**:
-1. Lipschitz continuity implies \( F(η + α g) \leq F(η) + α \langle \nabla F, g \rangle + \frac{α^2 L}{2} \|g\|^2 \)
-2. Setting \( g = -\nabla F \) (gradient direction) gives:
-   \[
-   F(η^{k+1}) \leq F(η^k) - \alpha (1 - \frac{\alpha L}{2}) \|\nabla F\|^2
-   \]
-3. Since \( \alpha < 2/L \), the term \( (1 - \alpha L/2) > 0 \), giving descent for this smooth deterministic step.
-
-### Theorem 2: SmallGain contraction, scoped form
-
-**Statement**: In the same quadratic/SPD local-linear regime, if the allocator's predicted Lipschitz spend remains inside the reserved margin, then the capped gradient step remains inside the same conservative contraction condition.
-
-**Proof Sketch**:
-1. Row-wise Lipschitz constraint: \( \sum_j L_{ij} < 2/\alpha \)
-2. SmallGain enforces a global predicted-spend cap: \( \sum_j \text{allocated}_{ij} \leq \rho \cdot (2/\alpha) \)
-3. Since ρ < 1, margin \( (1-ρ) \cdot (2/\alpha) > 0 \) remains
-4. By Gershgorin theorem, the Jacobian spectral radius \( < 2/\alpha \)
-5. Therefore, the fixed-point iteration is contractive under these local assumptions.
-
-**Empirical Validation**: See `docs/SMALLGAIN_VALIDATION_FINAL.md`
-
----
-
-## Troubleshooting
-
-### Warning: "Contraction margin below threshold"
-
-**Meaning**: The step margin is shrinking (safety buffer), system approaching instability
-
-**Actions** (in order of preference):
-1. Reduce `step_size` by 50% (e.g., 0.05 → 0.025)
-2. Reduce coupling weights by 30% (e.g., `weight=1.0 → 0.7`)
-3. Use homotopy to ramp up couplings gradually
-4. Enable SmallGain allocator for greedy margin allocation
-
-### Energy increasing despite guard
-
-**Possible Causes**:
-1. Numerical precision issues (use higher tolerance: `monotonic_energy_tol=1e-8`)
-2. Adaptive methods active (set `assert_monotonic_energy=False`)
-3. Noise enabled (increases energy to second order)
-4. Bug in gradient implementation (check with finite-difference)
-
-**Debug Steps**:
-1. Disable all extras: `noise_magnitude=0.0`, `weight_adapter=None`, `homotopy_steps=0`
-2. Enable assertion: `assert_monotonic_energy=True`
-3. Run minimal test case
-4. Check logs for NaN or inf values
-
-### Step size becoming tiny
-
-**Symptoms**: `contraction_margin` → 0, convergence slows drastically
-
-**Causes**:
-- Coupling weights too high (Lipschitz bound exploding)
-- Ill-conditioned energy function (monomials vs polynomials)
-
-**Fixes**:
-1. Use polynomial basis: `PolynomialEnergyModule(basis="legendre")`
-2. Reduce coupling weights (start low, increase gradually)
-3. Use homotopy: `homotopy_coupling_scale_start=0.2`
-4. Check for degenerate constraints (e.g., conflicting hinges)
-
----
+Strict mode exits nonzero when a reported module or coupling bound falls below an observed Hessian entry. The recorded seven-family run covered 6,080 component-state records with no observed underreporting. This audit detects sampled violations; it does not prove a global bound between sampled states.
 
 ## Test coverage
 
-Stability behavior in this repository is validated by:
+Current stability-related coverage includes:
 
-### Direct tests
+- `tests/test_precision_conditioning.py`: Lipschitz edge handling, preconditioning benefit, quadratic step-cap behavior, conservative mixed-regime behavior, randomized exact-Hessian coverage, and a structural custom-coupling check.
+- `tests/test_end_to_end_relaxation.py`: accepted energy monotonicity, gradient norm decrease, positive contraction margins, large-noise rejection, and sparse Small-Gain monotonicity.
+- `tests/test_small_gain_weight_adapter.py`: greedy allocation, bounds, fallback behavior, monotone energy on a small problem, and SPD contraction under the Gershgorin cap.
+- `tests/test_stiffness_updates.py`: stiffness update descent, coupling curvature in the precision cache, Jacobi trajectory equivalence, and rejected-step restoration.
 
-- `tests/test_stability_coupling_cap.py`: Auto-cap applied correctly
-- `tests/test_stability_coupling_sweep.py`: Stability across coupling strengths
-- `tests/test_stability_margin_warnings.py`: **NEW**, warning system (3 tests)
-- `tests/test_monotonic_energy.py`: Monotonicity assertions work
-
-### Integration tests
-
-- `tests/test_small_gain_weight_adapter.py`: SmallGain keeps monotone energy
-- `tests/test_polynomial_conditioning.py`: polynomial bases reduce ΔF variance in the tested setup
-- All `test_coordinator_*.py`: Energy non-increasing across modes
-
-**Run all stability tests**:
+Run the full suite:
 
 ```powershell
-uv run -m pytest tests/ -k "stability or monotonic or margin" -v
+.\.venv\Scripts\python.exe -m pytest tests -v
 ```
 
----
-
-## Worked example
-
-### Problem: dense coupling graph diverges
-
-```python
-# Risky: no stability guard, large step, strong couplings
-coord = EnergyCoordinator(
-    modules=[...],  # 16 modules
-    couplings=[(i, j, QuadraticCoupling(weight=2.0)) for ...],  # Dense graph
-    constraints={},
-    step_size=0.15,  # Too large!
-    stability_guard=False,
-)
-
-etas = coord.relax_etas(etas0, steps=50)
-# Energy diverges after ~10 steps
-```
-
-### Solution 1: enable guard
-
-```python
-# Stability guard auto-caps step size
-coord = EnergyCoordinator(
-    modules=[...],
-    couplings=[(i, j, QuadraticCoupling(weight=2.0)) for ...],
-    constraints={},
-    step_size=0.15,  # Requested, but will be capped
-    stability_guard=True,
-    log_contraction_margin=True,
-)
-
-etas = coord.relax_etas(etas0, steps=50)
-# Converges with a capped step, but may be slow (step size capped to ~0.01)
-```
-
-### Solution 2: SmallGain allocator
-
-```python
-# SmallGain allocates budget using value/cost priorities
-from core.weight_adapters import SmallGainWeightAdapter
-
-coord = EnergyCoordinator(
-    modules=[...],
-    couplings=[(i, j, QuadraticCoupling(weight=2.0)) for ...],
-    constraints={},
-    weight_adapter=SmallGainWeightAdapter(),
-    stability_guard=True,
-)
-
-etas = coord.relax_etas(etas0, steps=50)
-# In this scenario, uses fewer steps than Solution 1 with lower final energy
-```
-
----
-
-## Stability modes compared
-
-### 1. No guard (default, use for prototyping only)
-
-```python
-coord = EnergyCoordinator(stability_guard=False)
-```
-
-**Guarantees**:  None
-**Pros**: Lowest per-step overhead
-**Cons**: Can diverge on difficult energy functions
-**Use when**: Small graphs, smooth energies, debugging
-
-### 2. Standard stability guard
-
-```python
-coord = EnergyCoordinator(stability_guard=True)
-```
-
-**Guarantees**:  Energy non-increasing under the stated deterministic \(L\)-smooth assumptions
-**Pros**: Simple, low overhead (~5%)
-**Cons**: Conservative (uniform cap wastes budget)
-**Use when**: Simple graphs, applications that need conservative accepted-step checks, conservative baseline
-
-### 3. SmallGain allocator (recommended for dense benchmark scenarios)
-
-```python
-coord = EnergyCoordinator(
-    weight_adapter=SmallGainWeightAdapter(),
-    stability_guard=True,
-)
-```
-
-**Guarantees**:  Same accepted-step guard, plus bounded predicted spend
-**Pros**: Fewer ΔF90 steps and lower final energy in the documented dense benchmark
-**Cons**: 2-5x computational overhead per step
-**Use when**: Dense graphs (10+ modules), and energy quality matters more than per-step compute cost
-
----
-
-## Gershgorin bound (implementation details)
-
-### How we estimate L
-
-For each module \( i \), we estimate the local Hessian contribution:
-
-\[
-L_i^{local} = |F_i''(η_i)|
-\]
-
-For each coupling \( (i,j) \), we estimate:
-
-\[
-L_{ij}^{coupling} = |F_{ij}''|
-\]
-
-**Row sum** (Gershgorin bound):
-
-\[
-L_i^{row} = L_i^{local} + \sum_j L_{ij}^{coupling}
-\]
-
-**Global bound**:
-
-\[
-L = \max_i L_i^{row}
-\]
-
-### Coupling-specific estimates
-
-| Coupling Type | Lipschitz Contribution |
-|---------------|------------------------|
-| **QuadraticCoupling** | \( L_{ij} = 4w \) (second derivative of \( w(η_i - η_j)^2 \)) |
-| **HingeCoupling** | \( L_{ij} = 4w \) (when active), 0 (when inactive) |
-| **GateBenefitCoupling** | \( L_{ij} \approx 0 \) (linear term, no curvature) |
-
-**SmallGain Smoothing**: For hinges near activation (gap ≈ 0), we use a smooth interpolation to avoid discontinuities.
-
----
-
-## Contraction margin interpretation
-
-### Definition
-
-\[
-\text{margin} = \frac{2}{L} - \alpha_{\text{used}}
-\]
-
-**Physical meaning**: How much estimated step margin is left unused.
-
-### Healthy margins
-
-- **margin > 0.01**: room remains for adaptation
-- **margin ∈ [0.001, 0.01]**: accepted-step margin is tighter
-- **margin ∈ [1e-6, 0.001]**: tight, consider backing off
-- **margin < 1e-6**: warning emitted, instability risk
-
-### SmallGain budget tracking
-
-The allocator tracks:
-
-- **Global budget**: \( B = \rho \cdot (2/\alpha) \)
-- **Spent**: \( \sum_{ij} \text{allocated}_{ij} \)
-- **Remaining**: \( B - \text{spent} \)
-
-**Default operation**: Spent ≤ 70% of budget (ρ=0.7)
-
----
-
-## Advanced: passivity and dissipativity
-
-### Passivity interpretation
-
-Treating the coordinator as a dynamical system:
-
-\[
-\dot{η} = -\nabla F(η)
-\]
-
-The energy F acts as a **storage function**. The system is **passive** if:
-
-\[
-\frac{dF}{dt} = \langle \nabla F, \dot{η} \rangle = -\|\nabla F\|^2 \leq 0
-\]
-
-**Physical meaning**: Under this continuous model, energy decreases along the flow.
-
-### Small-Gain theorem (control theory)
-
-For interconnected subsystems with gains \( \gamma_i \):
-
-**Stability Condition**:
-
-\[
-\prod_{i \in \text{loop}} \gamma_i < 1
-\]
-
-**Our case**: Each coupling has a predicted gain \( L_{ij} \cdot \alpha \). The SmallGain allocator keeps predicted spend inside the configured margin.
-
-**Reference**: Zhou, K., & Doyle, J. C. (1998). Essentials of Robust Control. Chapter 6.
-
----
-
-## Empirical validation
-
-### SmallGain allocator results
-
-From `docs/SMALLGAIN_VALIDATION_FINAL.md`:
-
-**Baseline Scenario**:
-- Standard guard: ΔF90 = 22 steps, final energy = -0.0004
-- **SmallGain**: ΔF90 = 10 steps (55% reduction), final energy = -0.020
-
-**Dense Scenario (16 modules)**:
-- Standard guard: ΔF90 = 40 steps, **diverges** (final energy positive)
-- **SmallGain**: ΔF90 = 12 steps, final energy = -0.094
-
-**Conclusion**: In these benchmark scenarios, SmallGain used fewer ΔF90 steps and reached lower final energy than the compared baselines.
-
-### Polynomial conditioning results
-
-From `tests/test_polynomial_conditioning.py`:
-
-**Legendre vs Raw Landau**:
-- Raw Landau: ΔF variance = 0.045 (irregular)
-- **Legendre**: ΔF variance = 0.018 (60% smoother)
-
-**Takeaway**: In this test, the orthonormal basis reduced ΔF variance independent of step capping.
-
----
-
-## FAQ
-
-### Q: Do I need `stability_guard=True`?
-
-**A**: No, but recommended for:
-- Dense coupling graphs
-- scenarios with stronger coupling interactions
-- When coupling weights are tuned empirically (not hand-picked)
-- Applications where conservative accepted-step checks are required
-
-Disable for:
-- Prototyping on tiny graphs (<3 modules)
-- When you've validated step sizes empirically
-- Lowest per-step overhead is required and step sizes have been validated
-
-### Q: What's the overhead of SmallGain?
-
-**A**: 2-5x per-step compute vs gradient descent, but:
-- 30-40% fewer ΔF90 steps in documented dense benchmarks
-- lower final energy in documented dense benchmarks
-- **Observed result**: lower wall-time in the documented dense benchmark when fewer steps offset overhead
-
-### Q: Can I combine SmallGain with line search?
-
-**A**: Yes. They check different things:
-- SmallGain allocates budget across couplings
-- Line search validates each step (Armijo condition)
-- Both active = stricter step acceptance
-
-```python
-coord = EnergyCoordinator(
-    weight_adapter=SmallGainWeightAdapter(),
-    stability_guard=True,
-    line_search=True,  # Extra acceptance check
-)
-```
-
-### Q: Why not just use line search alone?
-
-**A**: Line search checks a proposed step after computing it. The stability guard caps the step before applying it. SmallGain adds a greedy value/cost allocation over the estimated margin.
-
----
+Use `uv run -m pytest tests -v` when the local `uv` cache is accessible in the active environment.
 
 ## Summary
 
-- **Stability guard**: Lyapunov-style step capping with conservative bounds
-- **SmallGain allocator**: Budget allocation that reduced ΔF90 steps in the documented dense benchmark
-- **Polynomial bases**: Reduced ΔF variance in the documented conditioning test
-- **Contraction margin**: observable step-margin metric with warnings
-
-**Recommended configuration for these repository demos**:
-
-```python
-from core.coordinator import EnergyCoordinator
-from core.weight_adapters import SmallGainWeightAdapter
-from modules.polynomial.polynomial_energy import PolynomialEnergyModule
-
-coord = EnergyCoordinator(
-    modules=[PolynomialEnergyModule(degree=3, basis="legendre"), ...],
-    couplings=my_couplings,
-    constraints={},
-    weight_adapter=SmallGainWeightAdapter(),
-    stability_guard=True,
-    log_contraction_margin=True,
-    warn_on_margin_shrink=True,
-    line_search=True,  # Extra acceptance check
-)
-```
-
-This configuration provides:
-- conservative stability controls
-- fewer ΔF90 steps on the documented dense benchmarks
-- runtime warnings
-- reproducible defaults for this repository
-
----
+The stability machinery is a composable energy-relaxation contract with curvature-aware safeguards. The repo-specific part is the way modules and couplings report curvature to one coordinator. The formal contraction claim is limited to the stated quadratic/SPD condition. Mixed regimes rely on conservative caps, accepted-step checks, telemetry, and local tests.
 
 ## References
 
-### Papers
-
-- Zhou, K., & Doyle, J. C. (1998). *Essentials of Robust Control*. Prentice Hall.
-- Boyd, S., & Vandenberghe, L. (2004). *Convex Optimization*. Cambridge University Press. (Chapter 9: Gradient methods)
-
-### Code
-
-- Implementation: `core/coordinator.py` (Gershgorin bound estimation)
-- SmallGain: `core/weight_adapters.py` (`SmallGainWeightAdapter`)
-- Tests: `tests/test_stability_*.py`, `tests/test_small_gain_*.py`
-
-### Related docs
-
-- `docs/SMALLGAIN_VALIDATION_FINAL.md`, empirical validation results
-- `docs/PROXIMAL_METHODS.md`, proximal operators for stability
-- `docs/POLYNOMIAL_BASES.md`, conditioning via orthonormal bases
-- `README.md`, quick-start examples
-
+- Boyd, S., Vandenberghe, L. (2004). *Convex Optimization*. Cambridge University Press. Use: standard gradient-method descent condition for smooth objectives. Local implication: step caps need an upper bound on gradient Lipschitz curvature. Limits: mixed nonlinear constraints need local tests and rejection guards.
+- Saad, Y. (2003). *Iterative Methods for Sparse Linear Systems*. SIAM. Use: Jacobi and Gauss-Seidel convergence conditions for linear systems. Local implication: stiffness updates match a Jacobi-style path in quadratic/SPD blocks. Limits: the repository does not implement a dedicated Gauss-Seidel stiffness schedule.
+- Vidyasagar, M. (1993). *Nonlinear Systems Analysis*. Prentice Hall. Use: small-gain framing for bounded feedback interactions. Local implication: margin telemetry is a useful guard for coupled updates. Limits: the current Small-Gain adapter is a conservative allocator, not a full nonlinear certificate.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, List, Tuple, Dict
 
 from core.coordinator import EnergyCoordinator
+from core.solver_config import SolverConfig
 from modules.gating.energy_gating import EnergyGatingModule
 from core.couplings import GateBenefitCoupling
 
@@ -26,19 +27,19 @@ def test_admm_gate_benefit_non_increasing_energy() -> None:
         couplings,
         constraints,
         use_analytic=True,
-        use_admm=True,
-        admm_steps=40,
-        admm_rho=1.0,
-        admm_step_size=0.05,
-        admm_gate_prox=True,
-        admm_gate_damping=0.5,
+        solver=SolverConfig.admm_solver(
+            steps=40,
+            rho=1.0,
+            step_size=0.05,
+            gate_prox=True,
+            gate_damping=0.5,
+        ),
     )
     etas = coord.compute_etas(inputs)
     energies: List[float] = []
     coord.on_energy_updated.append(lambda F: energies.append(F))
-    coord.relax_etas_admm(etas, steps=coord.admm_steps, rho=coord.admm_rho, step_size=coord.admm_step_size)
+    coord.relax_etas(etas)
     # Energy should be non-increasing across accepted steps
     assert len(energies) >= 1
     for a, b in zip(energies, energies[1:]):
         assert b <= a + 1e-12
-

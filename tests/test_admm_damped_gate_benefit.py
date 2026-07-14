@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, List, Tuple, Dict
 
 from core.coordinator import EnergyCoordinator
+from core.solver_config import SolverConfig
 from modules.gating.energy_gating import EnergyGatingModule
 from core.couplings import DampedGateBenefitCoupling, QuadraticCoupling
 
@@ -36,17 +37,18 @@ def test_admm_damped_gate_benefit_non_increasing_energy() -> None:
         couplings,
         constraints,
         use_analytic=True,
-        use_admm=True,
-        admm_steps=40,
-        admm_rho=1.0,
-        admm_step_size=0.05,
-        admm_gate_prox=True,
-        admm_gate_damping=0.5,
+        solver=SolverConfig.admm_solver(
+            steps=40,
+            rho=1.0,
+            step_size=0.05,
+            gate_prox=True,
+            gate_damping=0.5,
+        ),
     )
     etas = coord.compute_etas(inputs)
     energies: List[float] = []
     coord.on_energy_updated.append(lambda F: energies.append(F))
-    coord.relax_etas_admm(etas, steps=coord.admm_steps, rho=coord.admm_rho, step_size=coord.admm_step_size)
+    coord.relax_etas(etas)
     # Energy should be non-increasing across accepted steps
     assert len(energies) >= 1
     for a, b in zip(energies, energies[1:]):
@@ -77,16 +79,17 @@ def test_admm_damped_gate_benefit_parity_with_gradient() -> None:
         modules=modules2,
         couplings=couplings2,
         constraints=constraints2,
-        use_admm=True,
-        admm_steps=50,
-        admm_rho=1.0,
-        admm_step_size=0.05,
-        admm_gate_prox=True,
-        admm_gate_damping=0.5,
+        solver=SolverConfig.admm_solver(
+            steps=50,
+            rho=1.0,
+            step_size=0.05,
+            gate_prox=True,
+            gate_damping=0.5,
+        ),
     )
     etas0_admm = coord_admm.compute_etas(inputs2)
     e0_admm = coord_admm.energy(list(etas0_admm))
-    etas_admm = coord_admm.relax_etas_admm(etas0_admm, steps=coord_admm.admm_steps, rho=coord_admm.admm_rho, step_size=coord_admm.admm_step_size)
+    etas_admm = coord_admm.relax_etas(etas0_admm)
     e_admm = coord_admm.energy(etas_admm)
 
     # Both should reduce energy from start

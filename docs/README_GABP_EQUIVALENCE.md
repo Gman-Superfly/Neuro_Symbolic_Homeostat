@@ -1,23 +1,19 @@
-# Equivalence: GaBP ↔ Linear solvers (Jacobi/Gauss-Seidel)
+# Quadratic stiffness updates, Jacobi, and Gaussian BP
 
-Status: theoretical foundation, with synchronous Jacobi implemented through stiffness updates.
-Scope: algebra and proofs linking message passing to gradient descent and iterative linear solvers.
+Status: synchronous Jacobi is implemented and trajectory-tested; Gaussian BP is literature context.
+Scope: exact local algebra for the implemented stiffness update and the boundary of the message-passing analogy.
 
 ---
 
-## 1. The claim
+## 1. The implemented claim
 
-For quadratic energies with positive-definite precision (SPD stiffness), the following algorithms perform the same computation under the stated scheduling assumptions:
+For a quadratic energy with SPD precision, the coordinator's stiffness update is exactly Jacobi:
 
-1.  **Gaussian Belief Propagation (GaBP)** for means (message passing).
-2.  **Iterative Linear Solvers**:
-    *   Synchronous schedule = **Jacobi Method**.
-    *   Sequential schedule = **Gauss-Seidel (GS) Method**.
-3.  **Preconditioned Gradient Descent**:
-    *   Diagonal preconditioning = Jacobi.
-    *   Triangular preconditioning = Gauss-Seidel.
+\[
+x^{(t+1)} = x^{(t)} - D^{-1}(Jx^{(t)}-h).
+\]
 
-This equivalence lets the repository implement the synchronous Jacobi form with vectorized stiffness updates and no explicit message objects. Sequential Gauss-Seidel remains a theoretical reference and future scheduler target in this version.
+Gaussian belief propagation addresses the same Gaussian mean problem through edge messages and cavity precisions. When GaBP converges, its mean solves the same system $Jx=h$. General GaBP is not a stationary Jacobi iteration, and this repository does not implement or test GaBP message updates. Sequential Gauss-Seidel remains a future scheduler target.
 
 ---
 
@@ -60,7 +56,7 @@ x^{(t+1)} = x^{(t)} - D^{-1} \nabla F(x^{(t)})
 
 This is gradient descent with inverse-diagonal stiffness preconditioning.
 
-In GaBP terms: A node computes its new mean by summing incoming messages (forces) from neighbors at time \(t\) and dividing by its total precision (stiffness).
+This update uses the previous iterate for every neighbor and therefore has Jacobi scheduling semantics.
 
 ### 2.2 Gauss-Seidel iteration (sequential)
 
@@ -75,9 +71,7 @@ x^{(t+1)} = (D + L)^{-1} (h - U x^{(t)})
 
 This corresponds to updating variables one by one in order, immediately using the fresh values for the next variable.
 
-This is a sequential stiffness-scaled linear solve. The current coordinator has coordinate-descent utilities, but it does not yet expose this Gauss-Seidel stiffness schedule as a dedicated mode.
-
-In GaBP terms: messages are passed sequentially, so the update order changes how information propagates.
+This is a sequential stiffness-scaled linear solve. The current coordinator does not expose it as a dedicated mode.
 
 ---
 
@@ -92,11 +86,11 @@ In GaBP terms: messages are passed sequentially, so the update order changes how
 ## 4. References
 
 1.  **Weiss, Y., & Freeman, W. T. (2001).** *Correctness of Belief Propagation in Gaussian Graphical Models of Arbitrary Topology.* Neural Computation.
-    *   **Key Result**: Proves GaBP means converge to the true means for any topology where the walk-sum series converges (walk-summability).
+    *   **Local use**: correctness properties for Gaussian BP means when the message procedure converges. It does not prove that the coordinator implements GaBP.
 2.  **Malioutov, D., et al. (2006).** *Walk-sums and belief propagation in Gaussian graphical models.* JMLR.
-    *   **Key Result**: Links walk-summability directly to the spectral radius condition of linear solvers.
+    *   **Local use**: walk-sum interpretation and sufficient convergence conditions for Gaussian BP. These conditions are related to, but distinct from, the tested Jacobi condition.
 3.  **Saad, Y. (2003).** *Iterative Methods for Sparse Linear Systems.* SIAM.
-    *   **Key Result**: Standard text on Jacobi/GS convergence properties.
+    *   **Local use**: Jacobi and Gauss-Seidel convergence properties for linear systems.
 
 ---
 
@@ -106,10 +100,9 @@ In GaBP terms: messages are passed sequentially, so the update order changes how
 - Flag: `use_stiffness_updates=True`.
 - Implemented logic:
   ```python
-  # Equivalent to Jacobi / GaBP-Synchronous
+  # Exact Jacobi form for a quadratic system
   diag_stiffness = self.get_precision_diagonal() # D
   grad = self._grads(etas)                       # Jx - h
   step = grad / diag_stiffness                   # D^-1 (Jx - h)
   etas -= step
   ```
-

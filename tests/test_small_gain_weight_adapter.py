@@ -77,9 +77,13 @@ def test_small_gain_keeps_monotone_energy_on_small_problem() -> None:
     )
     # Attach adapter
     coord.weight_adapter = adapter  # type: ignore[assignment]
-    # Run a few steps; assertion in coordinator ensures monotone acceptance
+    # The coordinator validates each proposal under a fixed objective version.
     etas0 = [0.2, 0.8]
     _ = coord.relax_etas(etas0, steps=20)
+    transitions = coord.last_relaxation_metrics()["guard_transitions"]
+    assert transitions
+    for transition in transitions:
+        assert transition["energy_after"] <= transition["energy_before"] + 1e-12
 
 
 def test_gershgorin_step_cap_contracts_spd_quadratic_iteration() -> None:
@@ -95,5 +99,31 @@ def test_gershgorin_step_cap_contracts_spd_quadratic_iteration() -> None:
         spectral_radius = float(np.max(np.abs(np.linalg.eigvals(iteration_matrix))))
 
         assert spectral_radius < 1.0
+
+
+def test_coordinator_injects_family_costs_and_positive_margin() -> None:
+    adapter = SmallGainWeightAdapter(budget_fraction=0.5, max_step_change=0.05)
+    coord = EnergyCoordinator(
+        modules=[SequenceConsistencyModule(), SequenceConsistencyModule()],
+        couplings=[(0, 1, QuadraticCoupling(weight=0.1))],
+        constraints={},
+        weight_adapter=adapter,
+        expose_lipschitz_details=True,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+        step_size=0.03,
+        stability_guard=True,
+        assert_monotonic_energy=False,
+    )
+
+    coord.relax_etas([0.2, 0.8], steps=2)
+
+    family_key = "coup:QuadraticCoupling"
+    assert adapter.edge_costs[family_key] > 0.0
+    assert adapter.global_margin > 0.0
+    assert adapter.last_allocations[family_key] > 0.0
+    assert adapter.last_spent_global <= adapter.budget_fraction * adapter.global_margin
+    details = getattr(coord, "_last_lipschitz_details")
+    assert details["L_est"] > adapter.edge_costs[family_key]
 
 

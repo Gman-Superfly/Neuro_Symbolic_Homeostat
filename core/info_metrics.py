@@ -1,22 +1,10 @@
-"""Information Structure Metrics for Energy Landscapes.
-
-Implements validation signals from 'Information_Structures':
-- ρ (Redundancy): Semantic alignment/mutual information proxy
-- a (Alignment): Hidden-state concept matching
-- h (Hallucination): Constraint violation or unsupported output rate
-"""
+"""Information metrics used by optional relaxation telemetry."""
 
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Protocol, Any, Dict, Sequence
+from typing import Sequence
 import numpy as np
-
-
-class SupportsRedundancy(Protocol):
-    """Protocol for modules that can measure redundancy with a source."""
-    def compute_redundancy(self, source_eta: float, context: Any) -> float:
-        ...
 
 
 class InformationMetrics:

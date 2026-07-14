@@ -69,7 +69,7 @@ tracker.flush()
 - **Stability**: `contraction_margin`, `margin:global`, `margin:row:{i}` (if Small-Gain active)
 - **Thermodynamics**: `U_internal_energy`, `S_entropy`, `F_free_energy`, `T_temperature`
 - **Precision**: `precision:min`, `precision:mean`, `precision:max`
-- **Events**: `monotonicity_violation`, `escape_event_count`
+- **Events**: `monotonicity_violation`, `monotonicity_violation_count`, and `acceptance_reason`
 
 ---
 
@@ -80,3 +80,21 @@ tracker.flush()
 3.  **Use run IDs**: Use unique `run_id`s to distinguish experiments in the aggregated log files.
 4.  **Performance**: `log_per_eta` and detailed budget logging have overhead; disable for massive high-speed loops, enable for debugging/tuning.
 
+---
+
+## 4. Public state diagnostics
+
+Experiments that need a point-in-time diagnostic should use the public snapshot API rather than coordinator cache methods:
+
+```python
+snapshot = coord.inspect_state(etas)
+
+snapshot.energy
+snapshot.gradient
+snapshot.precision_diagonal
+snapshot.lipschitz_bound
+snapshot.term_weights
+snapshot.term_gradient_norms
+```
+
+`coord.build_noise_vector(raw_noise, snapshot.gradient)` exposes the configured noise transformation for controlled ablations. Both APIs preserve the coordinator's internal cache ownership.

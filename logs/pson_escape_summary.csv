@@ -1,0 +1,6 @@
+mode,baseline_mode,trials,escape_rate,baseline_escape_rate,paired_escape_rate_difference,difference_ci_low,difference_ci_high,bootstrap_samples,bootstrap_seed
+isotropic,none,200,0.0,0.0,0.0,0.0,0.0,10000,20260714
+orthogonal,none,200,0.0,0.0,0.0,0.0,0.0,10000,20260724
+orthogonal,isotropic,200,0.0,0.0,0.0,0.0,0.0,10000,20260725
+precision_orthogonal,none,200,0.33,0.0,0.33,0.265,0.395,10000,20260734
+precision_orthogonal,isotropic,200,0.33,0.0,0.33,0.265,0.395,10000,20260735

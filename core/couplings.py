@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Tuple
 
-from .interfaces import EnergyCoupling, OrderParameter, SupportsCouplingGrads
+from .interfaces import EnergyCoupling, OrderParameter
 
 __all__ = [
     "QuadraticCoupling",

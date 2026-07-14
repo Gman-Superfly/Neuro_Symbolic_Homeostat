@@ -15,10 +15,7 @@ Instead of gradient descent with a heuristic learning rate (`η ← η - α·∇
 
 where \(\Lambda_{ii}\) is the aggregated diagonal curvature (precision) for coordinate \(i\).
 
-This corresponds to:
-- **Newton's Method** (diagonal approximation)
-- **Jacobi Iteration** (solving \(Jx = h\) where \(J \approx \Lambda\))
-- **Gaussian Belief Propagation** (message passing equivalent for Gaussian models)
+This corresponds to a diagonal Newton-like approximation in general. For an exactly quadratic system with diagonal \(D=\operatorname{diag}(J)\), it is the Jacobi iteration for \(Jx=h\).
 
 ---
 
@@ -44,8 +41,8 @@ This aggregation happens automatically in `_update_precision_cache()`.
 ## 3. Why it matters
 
 1.  **Auto-Tuning Step Size**: The step \(\Delta \eta \approx \text{Force} / \text{Stiffness}\). Stiff variables take small, precise steps; slack variables take large steps to find equilibrium. No manual learning rate tuning required for well-modeled problems.
-2.  **Geometry-Aware PSON**: Precision-Scaled Orthogonal Noise uses this same \(\Lambda\) to scale exploration noise (\(\xi \propto \Lambda^{-1/2}\)), focusing search on flat directions.
-3.  **GaBP Equivalence**: For quadratic problems, this update matches the exact algebraic steps of Gaussian Belief Propagation.
+2.  **Geometry-Aware PSON**: Precision-Scaled Orthogonal Noise uses this same \(\Lambda\) to scale exploration noise toward lower-curvature coordinates before re-projection.
+3.  **Quadratic verification**: The test suite compares the implemented trajectory directly with a Jacobi reference. Gaussian BP is related literature context and is not implemented here.
 
 ---
 
@@ -64,7 +61,7 @@ coord = EnergyCoordinator(
 ```
 
 ### Compatibility
-- **Small-Gain**: Still protects stability by capping coupling weights or global step size if off-diagonal interactions are too strong.
+- **Small-Gain**: The adapter bounds predicted global curvature spend, while the coordinator caps the step from the composed curvature estimate.
 - **Adapters**: Weight adapters (SmallGain, GradNorm) still work by scaling the effective force and stiffness terms.
 - **CGBC/wormhole terms**: CGBC forces are linear and divided by the node's total stiffness, ensuring non-local signals respect local constraints.
 
@@ -84,4 +81,3 @@ See `tests/test_stiffness_updates.py` for:
 - Exact convergence on quadratic problems in 1 step.
 - Equivalence to preconditioned gradient descent.
 - Verification that CGBC/wormhole linear forces are preserved.
-

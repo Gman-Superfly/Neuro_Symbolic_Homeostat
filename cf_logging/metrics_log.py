@@ -8,7 +8,6 @@ from typing import Dict, Any, List
 import polars as pl
 
 LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
 
 
 def log_records(name: str, records: List[Dict[str, Any]]) -> Path:
@@ -24,6 +23,7 @@ def log_records(name: str, records: List[Dict[str, Any]]) -> Path:
     assert isinstance(records, list), "records must be a list"
     if not records:
         return LOG_DIR / f"{name}.csv"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     df = pl.DataFrame(records)
     out = LOG_DIR / f"{name}.csv"
     if out.exists():

@@ -1,87 +1,71 @@
-# Proximal operator splitting and ADMM
+# Proximal and ADMM-like solvers
 
-Status: experimental / advanced feature
-Scope: Solving energy minimization via proximal operators instead of gradient steps.
+Status: experimental solver paths with convex conformance tests
 
----
+Scope: bounded energy relaxation for the coupling families implemented in this repository
 
-## 1. Overview
+## Solver selection
 
-In mature supervised-learning recipes, catastrophic gradient-descent instability is uncommon because many guardrails are already present. In custom energy systems with non-smooth terms, stiff constraints, coupled objectives, or feedback-like dynamics, step-size sensitivity becomes more central. Proximal algorithms address this by replacing some explicit gradient steps with small implicit sub-problems.
+`SolverConfig` selects exactly one relaxation path. The constructor no longer accepts independent proximal and ADMM booleans, so callers cannot enable contradictory modes.
 
-The coordinator supports two modes:
-1.  **Proximal-Only** (`operator_splitting=True`): Iterative application of proximal operators.
-2.  **ADMM** (`use_admm=True`): Alternating Direction Method of Multipliers, introducing dual variables (multipliers) for strict constraint enforcement.
-
----
-
-## 2. Why use it?
-
-- **Constraint handling**: Proximal steps project onto the constraint set (e.g., \(\eta \in [0,1]\), hinge satisfied).
-- **Step-size sensitivity**: Implicit steps can tolerate larger steps for convex terms than explicit gradient descent in those regimes.
-- **Handling Non-Differentiable Terms**: L1 sparsity, sharp hinges, or discrete-like penalties work naturally without smoothing.
-
----
-
-## 3. Proximal operators implemented
-
-Located in `core/prox_utils.py`:
-
-### 3.1 `prox_quadratic_pair`
-Solves the proximal operator for \(w(\eta_i - \eta_j)^2\).
-- Used for: `QuadraticCoupling`.
-- Effect: Pulls \(\eta_i, \eta_j\) closer together analytically.
-
-### 3.2 `prox_asym_hinge_pair`
-Solves the proximal operator for \(w \max(0, \beta \eta_j - \alpha \eta_i)^2\).
-- Used for: `DirectedHingeCoupling`, `AsymmetricHingeCoupling`.
-- Effect: Enforces the hinge constraint exactly if violated; does nothing if satisfied.
-
-### 3.3 `prox_linear_gate`
-Solves the proximal operator for linear terms like \(c \cdot \eta\).
-- Used for: `GateBenefitCoupling` (in ADMM mode with `admm_gate_prox=True`).
-- Effect: Shifts \(\eta\) by the benefit gradient, respecting bounds.
-
----
-
-## 4. ADMM implementation
-
-When `use_admm=True`, the `relax_etas_admm` loop runs:
-
-1.  **s-update**: Update auxiliary splitting variables based on couplings.
-2.  **η-update (Primal)**: Update order parameters using local gradients + coupling forces + Lagrange multipliers.
-3.  **u-update (Dual)**: Update Lagrange multipliers based on constraint violation (residuals).
-
-This effectively turns the "soft" springs of the physics simulation into "hard" constraints over time as multipliers grow.
-
----
-
-## 5. Usage
-
-### Proximal-Only Mode
 ```python
-coord = EnergyCoordinator(
-    ...,
-    operator_splitting=True,
-    prox_steps=50,
-    prox_tau=0.05,  # Step size parameter
+from core.coordinator import EnergyCoordinator
+from core.solver_config import SolverConfig
+
+coordinator = EnergyCoordinator(
+    modules=modules,
+    couplings=couplings,
+    constraints=constraints,
+    solver=SolverConfig.proximal_solver(steps=50, tau=0.05),
+)
+
+result = coordinator.relax_etas(initial_state)
+```
+
+The ADMM-like path uses the same dispatch point:
+
+```python
+solver = SolverConfig.admm_solver(
+    steps=100,
+    rho=1.0,
+    step_size=0.02,
+    gate_prox=True,
+    gate_damping=0.5,
 )
 ```
 
-### ADMM Mode
-```python
-coord = EnergyCoordinator(
-    ...,
-    use_admm=True,
-    admm_rho=1.0,       # Penalty parameter (stiffness)
-    admm_steps=50,
-    admm_gate_prox=True # Use prox for gates
-)
+The maintained implementations live in `core/solvers/proximal.py` and `core/solvers/admm.py`. The old direct methods remain as deprecation wrappers for existing callers.
+
+## Implemented updates
+
+The proximal path applies local projected gradient steps followed by supported coupling operators:
+
+- `prox_quadratic_pair` handles `QuadraticCoupling`.
+- `prox_asym_hinge_pair` handles directed and asymmetric squared hinges.
+- `prox_linear_gate` handles the local linearization used for gate-benefit couplings.
+- Pairwise and star-block schedules are available.
+
+The ADMM-like path introduces auxiliary and scaled dual variables for quadratic and hinge couplings. It performs an auxiliary update, a projected primal gradient update, and a dual update. Gate-benefit terms use either their gradient or a damped proximal-linear update. `last_solver_metrics()` reports attempted, accepted, and rejected steps plus primal and dual residual histories.
+
+Both paths evaluate the full configured energy after each proposal. An uphill proposal is rejected, the previous accepted state is restored, and relaxation stops. This guard establishes accepted-state monotonicity for the tested deterministic runs; it does not prove convergence for every nonconvex module or coupling combination.
+
+## Verification
+
+`tests/test_solver_conformance.py` applies one contract to gradient, proximal, and ADMM-like modes:
+
+- finite order parameters within the closed interval $[0,1]$,
+- non-increasing accepted energy,
+- agreement with a closed-form two-variable convex optimum,
+- restoration after a deliberately oversized rejected step,
+- finite ADMM residual histories that contract below $10^{-3}$ on the convex reference case, and
+- early rejection of invalid mode-specific configuration.
+
+The gate-benefit tests cover the ADMM-like gate update separately. These tests support the implemented behavior on the recorded synthetic cases. Broader nonconvex convergence, large sparse graph behavior, and task-level benefit remain untested.
+
+Run the focused checks with:
+
+```powershell
+python -m pytest -q tests\test_solver_conformance.py tests\test_admm_damped_gate_benefit.py tests\test_coordinator_admm_gate_benefit.py
 ```
 
----
-
-## 6. Verification
-
-See `experiments/demo_operator_splitting.py` for a runnable example of proximal relaxation on a small graph with hinges and springs.
-
+The proximal demonstration remains available through `python -m experiments.demo_operator_splitting`.

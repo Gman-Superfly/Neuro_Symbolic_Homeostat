@@ -54,7 +54,7 @@ Implication: the pure bilinear piece is indefinite (zero diagonal curvature, non
 
 ---
 
-## 3. Stability and Small‑Gain
+## 3. Curvature accounting and stability
 
 Let \(L\) denote the Lipschitz bound of ∇F estimated via Gershgorin row sums. For a bilinear edge (i, j):
 
@@ -63,11 +63,13 @@ Let \(L\) denote the Lipschitz bound of ∇F estimated via Gershgorin row sums. 
 
 Therefore:
 - Diagonal dominance can be lost more easily as |w_{ij}| grows.
-- Small‑Gain budgeting should cap the effective |w_{ij}| contribution to keep loop gains < 1.
+- The composed curvature estimate must include |w_{ij}| in both endpoint row sums.
+- A contraction statement additionally requires the full local Hessian to be positive definite. An absolute row-sum bound alone does not make an indefinite objective convex.
 
 Recommended guardrails:
-- Treat |w_{ij}| as “spend” against the row/global budget in the Small‑Gain allocator.
-- Prefer lower budget fractions for bilinear families (e.g., ρ=0.5 vs 0.7) when first enabling.
+- Report |w_{ij}| through `SupportsCouplingCurvature` and retain the curvature-based step cap.
+- Require enough positive diagonal curvature to establish the intended local SPD regime.
+- If adaptive coupling weights are under study, account for |w_{ij}| as spend in the optional Small-Gain allocator.
 - Keep monotone acceptance (reject steps with ΔF > 0).
 
 ---
@@ -105,7 +107,7 @@ This 2×2 system is cheap and stabilizes updates when \(w \neq 0\). It is recomm
 ### 4.3 Practical Recipe
 - Require (or induce) modest diagonal curvature \(a_i, a_j > 0\) where bilinear edges exist (from locals or a tiny diagonal regularizer).
 - Prefer GS/priority scheduling in sparse graphs; avoid purely synchronous Jacobi if many strong bilinear edges exist.
-- Keep Small‑Gain active to cap |w| and protect contraction.
+- Keep the curvature-based step cap and monotone acceptance active. Use the Small-Gain allocator only when adaptive coupling weights are part of the experiment.
 
 ---
 
@@ -163,18 +165,20 @@ class BilinearCoupling(EnergyCoupling, SupportsCouplingGrads):
 
 Integration points:
 - Lipschitz estimator: add |w| to off‑diagonal row sums (no diagonal add).
-- Small‑Gain allocator: treat |w| as “cost” per family for budget/spend.
+- Curvature protocol: report `(0, 0, abs(w))` so both Gershgorin rows include the off-diagonal contribution.
+- Optional Small-Gain allocator: treat |w| as family cost when weights are adaptive.
 - Optional: 2×2 local solver path when `use_stiffness_updates` and `has_bilinear_edges=True`.
 
 ---
 
 ## 8. Safety Checklist
 
-- Keep Small‑Gain enabled; cap bilinear family scale aggressively at first.
+- Keep the curvature-based step cap enabled and start with small fixed bilinear weights.
 - Ensure diagonal curvature (from locals/springs/hinges or a tiny regularizer) near bilinear edges.
 - Prefer GS or local 2×2 block solves on bilinear edges.
 - Maintain monotone acceptance; reject non‑decreasing steps.
 - Do not feed bilinear into diagonal precision used by PSON scaling.
+- Use the optional Small-Gain allocator only in experiments that adapt coupling-family weights.
 
 ---
 
@@ -182,7 +186,7 @@ Integration points:
 
 1) Gradients: analytic vs finite‑difference on random η pairs and weights
 2) Gershgorin: row sum increases by |w| for both rows; diagonal unchanged
-3) Stability: with Small‑Gain on, ΔF ≤ 0 for a small graph with bilinear + locals
+3) Stability: the reported row-sum bound covers the exact Hessian spectral radius on random bilinear + local quadratic graphs
 4) Solver: Compare GS/2×2 update against Jacobi on the same graph
 5) PSON: noise energy contribution remains bounded; orthogonality preserved
 
@@ -190,6 +194,5 @@ Integration points:
 
 ## 10. Summary
 
-Adding a bilinear coupling introduces true off‑diagonal curvature for concise multiplicative interactions. It increases expressivity, but tightens stability and conditioning. Use Small‑Gain budgeting, adequate diagonal curvature, and GS/2×2 local updates. Keep it behind a flag and validate with monotone acceptance and telemetry before wider use.
-
+Adding a bilinear coupling introduces true off-diagonal curvature for concise multiplicative interactions. It increases expressivity, but tightens stability and conditioning. Require explicit curvature reporting, adequate diagonal curvature, and guarded GS or 2×2 local updates. Keep it behind a flag and validate the SPD assumptions, monotone acceptance, and telemetry before wider use.
 

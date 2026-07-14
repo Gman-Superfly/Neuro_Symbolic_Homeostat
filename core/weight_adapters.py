@@ -7,9 +7,8 @@ plugged into EnergyCoordinator to keep term contributions well-behaved.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, TYPE_CHECKING
+from typing import Dict, List, Mapping
 
-from .interfaces import WeightAdapter
 from .agm_metrics import compute_agm_phase_metrics
 
 
@@ -134,22 +133,25 @@ __all__.extend(["AGMPhaseWeightAdapter"])
 
 @dataclass
 class SmallGainWeightAdapter:
-    """Per-edge stability-margin allocator with row-aware greedy budgeting.
+    """Family-level allocator with a global curvature-spend budget.
 
-    Production intent: conservative, monotone-compatible allocator that spends a fraction
-    of the available contractivity budget (global and per-row) to boost coupling families
-    with the highest expected ΔF per ΔL ratio.
+    The adapter spends a fraction of the coordinator's estimated curvature
+    margin on coupling families ranked by a gradient-value to curvature-cost
+    proxy. The coordinator still applies its step cap and accepted-step guard.
 
     Coordinator integration:
       - Before calling step(...), the coordinator should populate:
-          self.edge_costs: Dict[str, float]    # ΔL per coupling key (e.g., 'coup:ClassName')
-          self.row_margins: Dict[int, float]   # per-row margins m_r
-          self.global_margin: float            # global margin
+          self.edge_costs: Dict[str, float]    # ΔL per family key
+          self.row_margins: Dict[int, float]   # telemetry only
+          self.global_margin: float            # enforced spend source
       - These are treated as snapshots for the current step only.
 
     Bounded updates and smoothing:
-      - Per-step weight change is limited to ±max_step_change.
+      - Per-step weight increases are limited to max_step_change.
       - Scores (value/cost) use EMA to reduce noise.
+
+    Boundary: row margins are exposed for telemetry, but the current adapter
+    does not book spend against row incidence. The enforced limit is global.
 
     Observability:
       - last_allocations: Dict[str, float] of Δweight applied per key (for logging)
@@ -168,8 +170,8 @@ class SmallGainWeightAdapter:
     eps: float = 1e-9
 
     # Snapshots injected by coordinator per step
-    edge_costs: Dict[str, float] = field(default_factory=dict)      # ΔL per coupling key
-    row_margins: Dict[int, float] = field(default_factory=dict)     # per-row margins
+    edge_costs: Dict[str, float] = field(default_factory=dict)      # ΔL per family key
+    row_margins: Dict[int, float] = field(default_factory=dict)     # telemetry snapshot
     global_margin: float = 0.0
 
     # Adapter state

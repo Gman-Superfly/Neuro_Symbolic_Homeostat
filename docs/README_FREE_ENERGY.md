@@ -67,7 +67,7 @@ When enabled, `relax_etas` will:
 ## 5. Implementation Details
 
 - **Location**: `core/coordinator.py` (`_compute_entropy`, `_compute_free_energy`).
-- **Observability**: When enabled, `RelaxationTracker` and `EnergyBudgetTracker` logs will include `U_internal_energy`, `S_entropy`, and `F_free_energy`.
+- **Observability**: `EnergyBudgetTracker(log_free_energy_decomposition=True)` logs `U_internal_energy`, `S_entropy`, and `F_free_energy`. `RelaxationTracker` records the accepted total-energy trace.
 - **Interaction**: Replaces the standard `assert_monotonic_energy` check.
 
 ---
@@ -77,4 +77,3 @@ When enabled, `relax_etas` will:
 - **T = 0**: Equivalent to standard energy minimization (greedy).
 - **Small T (0.01 - 0.1)**: Slight regularization against boundary collapse; cleaner gradients near 0/1.
 - **Large T (1.0+)**: Strong preference for uncertainty (\(\eta \approx 0.5\)); system will only commit to 0 or 1 if constraints (\(U\)) are sufficiently strong. Useful for annealing.
-

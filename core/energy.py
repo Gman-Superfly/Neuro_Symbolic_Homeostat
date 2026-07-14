@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Mapping, Any, Tuple, Dict
-import math
+from typing import Any, Callable, Dict, List, Mapping
 
 import numpy as np
 
@@ -85,31 +84,46 @@ def project_noise_metric_orthogonal(
     grad: np.ndarray,
     *,
     M: np.ndarray | None = None,
-    Mv: callable | None = None,
+    metric_solve: Callable[[np.ndarray], np.ndarray] | None = None,
     eps: float = 1e-8,
 ) -> np.ndarray:
-    """Project noise onto the subspace orthogonal to the gradient under metric M.
-    
-    When M is None and Mv is None, falls back to Euclidean projection.
-    
-    Uses:
-        z_perp = z - ((z^T M g) / (g^T M g)) g
-    where M g is computed via Mv(g) if provided, else M @ g.
+    """Return the M-orthogonal projection onto the energy tangent plane.
+
+    ``grad`` is the ordinary gradient covector, so first-order tangency requires
+    ``grad.T @ delta == 0``. The corresponding metric gradient is
+    ``metric_grad = solve(M, grad)``. Projecting along that vector gives
+
+        delta = z - ((grad.T @ z) / (grad.T @ metric_grad)) * metric_grad.
+
+    The result is M-orthogonal to the metric gradient and therefore has zero
+    first-order directional derivative. ``metric_solve`` provides a matrix-free
+    implementation of ``solve(M, vector)``. With no metric input, this function
+    falls back to the Euclidean projection.
     """
     g = np.asarray(grad, dtype=float)
     z = np.asarray(noise, dtype=float)
-    if M is None and Mv is None:
+    assert g.shape == z.shape, "noise and grad must have the same shape"
+    assert g.ndim == 1, "metric projection expects one-dimensional vectors"
+    assert M is None or metric_solve is None, "provide M or metric_solve, not both"
+    if M is None and metric_solve is None:
         return project_noise_orthogonal(z, g, eps=eps)
-    if Mv is not None:
-        Mg = np.asarray(Mv(g), dtype=float)
-    else:
-        Mg = np.asarray(M @ g, dtype=float)  # type: ignore[operator]
-    gT_M_g = float(np.sum(g * Mg))
-    if abs(gT_M_g) < eps:
+
+    grad_norm_sq = float(np.dot(g, g))
+    if grad_norm_sq < eps:
         return z
-    zT_M_g = float(np.sum(z * Mg))
-    alpha = zT_M_g / gT_M_g
-    return z - alpha * g
+
+    if metric_solve is not None:
+        metric_grad = np.asarray(metric_solve(g), dtype=float)
+    else:
+        metric = np.asarray(M, dtype=float)
+        assert metric.shape == (g.size, g.size), "M shape must match the gradient dimension"
+        metric_grad = np.linalg.solve(metric, g)
+
+    assert metric_grad.shape == g.shape, "metric_solve must preserve vector shape"
+    denominator = float(np.dot(g, metric_grad))
+    assert np.isfinite(denominator) and denominator > 0.0, "metric solve must define a positive SPD geometry"
+    alpha = float(np.dot(g, z)) / denominator
+    return z - alpha * metric_grad
 
 
 

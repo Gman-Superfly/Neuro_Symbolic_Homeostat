@@ -1,4 +1,4 @@
-# Auto scheduling: noise and step size (PSON + Small-Gain)
+# Auto scheduling: noise and curvature-capped step size
 
 Status: available in this repository (opt-in flags)
 Scope: Automatic scheduling of (1) orthogonal noise magnitude and (2) step size from a stability bound.
@@ -30,7 +30,7 @@ Precision‑aware option:
 - If `precision_aware_noise_controller=True`, the controller redistributes noise along low‑curvature directions via weights ∝ 1/(ε + curvature). After re‑weighting, we re‑project to preserve orthogonality.
 
 Metric‑aware note:
-- If a metric M is provided (`metric_matrix` or `metric_vector_product`) and `metric_aware_noise_controller=True`, the projection uses M‑orthogonal geometry. The controller still only sets magnitude; the projection governs direction.
+- If an SPD metric is provided through `metric_matrix` or `metric_solve` and `metric_aware_noise_controller=True`, the projection uses the metric gradient while preserving zero first-order energy change. The controller still only sets magnitude.
 
 Recommended combo (automatic magnitude and capped step):
 
@@ -65,7 +65,7 @@ What it does:
   `step_to_use = stability_cap_fraction * (2/L)` (hands‑free step size).
 
 Why it’s useful:
-- Consistent with Small‑Gain/stability budgeting; reduces manual step tuning.
+- Uses the same composed curvature estimate as the stability guard and reduces manual step tuning.
 - Keeps iterations inside the contraction condition when the estimated bound upper-bounds the local Lipschitz constant.
 
 Recommended setup:
@@ -105,10 +105,13 @@ coord = EnergyCoordinator(
 )
 ```
 
-### B) Metric‑aware geometry (optional)
+### B) Metric-aware geometry (optional)
 ```python
-coord.metric_aware_noise_controller = True
-coord.metric_matrix = np.diag([1.0, 5.0, 0.5, 2.0])
+coord = EnergyCoordinator(
+    ...,
+    metric_aware_noise_controller=True,
+    metric_matrix=np.diag([1.0, 5.0, 0.5, 2.0]),
+)
 ```
 
 ---
@@ -121,6 +124,6 @@ coord.metric_matrix = np.diag([1.0, 5.0, 0.5, 2.0])
 ---
 
 ## See also
-- `docs/README_TANGENT_NOISE_PSON.md` (design of tangent noise; Euclidean and M-orthogonal)
-- `docs/STABILITY_GUARANTEES.md` (Small-Gain, Gershgorin bounds, contraction margins)
+- `docs/README_TANGENT_NOISE_PSON.md` (design of Euclidean and metric-consistent tangent noise)
+- `docs/STABILITY_GUARANTEES.md` (Gershgorin bounds, contraction margins, and the optional Small-Gain allocator)
 - `experiments/demo_metric_orthogonal.py` (metric-aware projection demo)

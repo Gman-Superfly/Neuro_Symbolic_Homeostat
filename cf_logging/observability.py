@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+import math
 import time
 
 from core.agm_metrics import compute_agm_phase_metrics, compute_uncertainty_metrics
@@ -92,10 +93,6 @@ class EnergyBudgetTracker:
     _energy_history: List[float] = field(default_factory=list, init=False, repr=False)
     _monotonicity_violations: int = field(default=0, init=False, repr=False)
     _last_timestamp: Optional[float] = field(default=None, init=False, repr=False)
-    # Optional polynomial basis monitor
-    _poly_history: Dict[str, List[List[float]]] = field(default_factory=dict, init=False, repr=False)
-    poly_history_window: int = 64
-    poly_corr_warn_threshold: float = 0.9
     # Margin warning
     warn_on_margin_shrink: bool = False
     margin_warn_threshold: float = 1e-6
@@ -171,7 +168,7 @@ class EnergyBudgetTracker:
             S = 0.0
             for eta_val in etas:
                 eta_f = float(max(1e-9, min(1.0 - 1e-9, eta_val)))  # Clamp away from boundaries
-                s_i = -(eta_f * float(__import__('math').log(eta_f)) + (1.0 - eta_f) * float(__import__('math').log(1.0 - eta_f)))
+                s_i = -(eta_f * math.log(eta_f) + (1.0 - eta_f) * math.log(1.0 - eta_f))
                 S += s_i
             # F = U - T*S
             F = U - float(self.temperature) * S
@@ -196,14 +193,6 @@ class EnergyBudgetTracker:
         except Exception:
             # best-effort; ignore precision logging errors
             pass
-        # Sensitivity probes: dispersion measure (if available)
-        try:
-            if hasattr(coord, "last_probe_dispersion"):
-                val = getattr(coord, "last_probe_dispersion")()
-                if val is not None:
-                    row["sensitivity:dispersion"] = float(val)
-        except Exception:
-            pass
         # Information structure metrics (if reference provided)
         try:
             # Alignment and drift relative to reference etas
@@ -226,20 +215,6 @@ class EnergyBudgetTracker:
                 if isinstance(v, (int, float)) and isinstance(t, (int, float)):
                     rate = InformationMetrics.compute_constraint_violation_rate(int(v), int(t))
                     row["info:constraint_violation_rate"] = float(rate)
-        except Exception:
-            pass
-        # Escape events (if available)
-        try:
-            if hasattr(coord, "get_escape_event_count"):
-                row["escape_event_count"] = int(getattr(coord, "get_escape_event_count")())
-        except Exception:
-            pass
-        # Confidence (if available)
-        try:
-            if hasattr(coord, "last_confidence"):
-                cval = getattr(coord, "last_confidence")()
-                if cval is not None:
-                    row["confidence:c"] = float(cval)
         except Exception:
             pass
         # AGM phase metrics and uncertainty (computed on recent energy history)
@@ -320,62 +295,6 @@ class EnergyBudgetTracker:
             spent_g = getattr(wa, "last_spent_global", None)
             if isinstance(spent_g, (int, float)):
                 row["spent:global"] = float(spent_g)
-        # Homotopy telemetry if available
-        homo_scale = getattr(coord, "_homotopy_scale", None)
-        if isinstance(homo_scale, (int, float)):
-            row["homotopy_scale"] = float(homo_scale)
-        homo_backoffs = getattr(coord, "_homotopy_backoffs", None)
-        if isinstance(homo_backoffs, (int, float)):
-            row["homotopy_backoffs"] = float(homo_backoffs)
-        # Polynomial basis decorrelation monitor (aPC-style)
-        try:
-            for idx, (m, eta) in enumerate(zip(coord.modules, etas)):
-                # Detect polynomial module by method presence
-                if hasattr(m, "get_basis_values"):
-                    key = f"poly:{idx}"
-                    vals = m.get_basis_values(float(eta), coord.constraints)  # type: ignore[attr-defined]
-                    hist = self._poly_history.get(key, [])
-                    hist.append([float(v) for v in vals])
-                    if len(hist) > int(self.poly_history_window):
-                        hist = hist[-int(self.poly_history_window):]
-                    self._poly_history[key] = hist
-                    if len(hist) >= 4:
-                        # Compute correlation matrix (features x features)
-                        k = len(hist[0])
-                        # Compute mean per feature
-                        means = [0.0] * k
-                        for rowv in hist:
-                            for j in range(k):
-                                means[j] += rowv[j]
-                        n = float(len(hist))
-                        means = [m / n for m in means]
-                        # Compute covariance matrix
-                        cov = [[0.0 for _ in range(k)] for _ in range(k)]
-                        for rowv in hist:
-                            for a in range(k):
-                                da = rowv[a] - means[a]
-                                for b in range(k):
-                                    db = rowv[b] - means[b]
-                                    cov[a][b] += da * db
-                        for a in range(k):
-                            for b in range(k):
-                                cov[a][b] = cov[a][b] / max(1.0, n - 1.0)
-                        # Convert to correlation; guard zero variance
-                        var = [max(cov[j][j], 1e-12) for j in range(k)]
-                        corr_max = 0.0
-                        for a in range(k):
-                            for b in range(k):
-                                if a == b:
-                                    continue
-                                denom = (var[a] * var[b]) ** 0.5
-                                r = cov[a][b] / denom if denom > 0.0 else 0.0
-                                corr_max = max(corr_max, abs(float(r)))
-                        row[f"poly_corr_max:{key}"] = float(corr_max)
-                        # Emit thresholded warning flag
-                        row[f"poly_corr_warn:{key}"] = 1 if corr_max >= float(self.poly_corr_warn_threshold) else 0
-        except Exception:
-            # Best-effort; ignore failures
-            pass
         if last_bk is not None:
             row["last_backtracks"] = int(last_bk)
         if total_bk is not None:

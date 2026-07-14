@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from itertools import product
+from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import polars as pl
@@ -35,7 +37,7 @@ def run_job(
 ) -> None:
     run_id = f"{run_id_prefix}_{scenario}_rho{rho}_dw{dw}"
     cmd = [
-        "python",
+        sys.executable,
         "-m",
         "experiments.benchmark_delta_f90",
         "--configs",
@@ -55,7 +57,6 @@ def run_job(
         cmd += ["--dense_size", str(int(dense_size))]
     if log_budget:
         cmd += ["--log_budget"]
-    # Use uv when executed via `uv run`; here we assume the script is called with uv, so python resolves correctly.
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, check=True)
 
@@ -81,8 +82,10 @@ def summarize(run_id_prefix: str, out_csv: str) -> str:
     ]
     cols = [c for c in cols if c in df.columns]
     out = df.select(cols)
-    out.write_csv(f"plots/{out_csv}")
-    return f"plots/{out_csv}"
+    output_path = Path("plots") / out_csv
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out.write_csv(output_path)
+    return str(output_path)
 
 
 def main() -> None:

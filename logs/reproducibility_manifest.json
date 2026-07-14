@@ -1,0 +1,119 @@
+{
+  "artifacts": [
+    {
+      "bytes": 585901,
+      "data_rows": 630,
+      "path": "logs/pson_noise_ablation.csv",
+      "sha256": "1eef0f5bc10c095b90c1318dde314157a4f9869c51408d8452e6bd08b56b8e10"
+    },
+    {
+      "bytes": 5294,
+      "data_rows": 14,
+      "path": "logs/pson_noise_ablation_summary.csv",
+      "sha256": "7ed6395e40fbd24474a7b5eab6025d034e01b7d5f02b0ee4da5fd7adda37a8d2"
+    },
+    {
+      "bytes": 47545,
+      "data_rows": 800,
+      "path": "logs/pson_escape_trials.csv",
+      "sha256": "26fc716e29692a3f7460cd2da8fda329c906e58e59a1257a5c802d6f3d4f4afb"
+    },
+    {
+      "bytes": 481,
+      "data_rows": 5,
+      "path": "logs/pson_escape_summary.csv",
+      "sha256": "1a7a15b3ded4c3de5a9cdcde8b159313d73d90a9a8a2b0c5d20950770fcdeafe"
+    },
+    {
+      "bytes": 379,
+      "data_rows": 3,
+      "path": "logs/pson_analytic_reference.csv",
+      "sha256": "7b38a3fc1480847d0513cd481fc3a072bf3cf9801f751999a3b2f323ccf809e5"
+    },
+    {
+      "bytes": 943091,
+      "data_rows": 6080,
+      "path": "logs/curvature_contract_audit.csv",
+      "sha256": "2ed987cc207f36a5d0c3cd65630922031c5ee1c181aa9b9ae92891ed3f1e7f94"
+    },
+    {
+      "bytes": 9790,
+      "data_rows": 9,
+      "path": "logs/scaling_benchmark.csv",
+      "sha256": "ac98de7535c15b33d7037698f25906ae583f37504385d278efb04bbd6c6b73ef"
+    },
+    {
+      "bytes": 286,
+      "path": "logs/scaling_model.json",
+      "sha256": "c1525bba9c4381cf8915de5b928a5084f32fe5166fea67f40bf5ad1c54c652d4"
+    },
+    {
+      "bytes": 64899,
+      "path": "docs/figures/pson_cost_reduction.png",
+      "sha256": "de1b8b4b905499d62e982ddd1b82a4e32754fb4ad99d4081ebbf3b49dbdbf68e"
+    },
+    {
+      "bytes": 37912,
+      "path": "docs/figures/pson_escape_rate.png",
+      "sha256": "709ce6344a2436ed9b0421770312521121619b031e7d3756d8b7408d5a195403"
+    },
+    {
+      "bytes": 68324,
+      "path": "docs/figures/runtime_scaling.png",
+      "sha256": "2f678a586b231e2ff332b86c2aab159525334f2395a676ba583dd25cef19e215"
+    }
+  ],
+  "commands": [
+    "python -m pytest -q",
+    "python -m experiments.audit_curvature_contract --samples 32 --strict",
+    "python -m experiments.validate_pson_reference --samples 100000",
+    "python -m experiments.ablate_pson_noise --trials 30 --steps 80 --noise-cost-samples 32 --bootstrap-samples 10000",
+    "python -m experiments.benchmark_pson_escape --trials 200 --steps 40 --bootstrap-samples 10000",
+    "python -m experiments.benchmark_scaling --sizes 16 64 256 --edge-factors 1 4 16 --repeats 7 --warmups 2 --steps 20 --environment-label windows_python_3_12_local",
+    "python -m experiments.plots.plot_publication_results"
+  ],
+  "deferred": [
+    "real_model_evaluation",
+    "archival_release_and_doi",
+    "independent_external_reproduction"
+  ],
+  "generated_at_utc": "2026-07-14T21:22:31.821725+00:00",
+  "protocol": {
+    "escape_steps": 40,
+    "escape_trials": 200,
+    "hierarchical_bootstrap_resamples": 10000,
+    "noise_draws_per_seed": 32,
+    "pson_problem_seeds": 30,
+    "scaling_edge_factors": [
+      1,
+      4,
+      16
+    ],
+    "scaling_process_isolation": "one fresh Python process per size and edge-factor case",
+    "scaling_repeats": 7,
+    "scaling_sizes": [
+      16,
+      64,
+      256
+    ],
+    "scaling_warmups": 2
+  },
+  "runtime": {
+    "dependencies": {
+      "matplotlib": "3.11.0",
+      "numpy": "2.4.6",
+      "polars": "1.42.1",
+      "pytest": "9.0.3"
+    },
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "python": "3.12.1",
+    "release": "10",
+    "system": "Windows"
+  },
+  "schema_version": 1,
+  "source": {
+    "git_commit": "fec4fe2d5d2e84e7524d54706d1a2764b7d1ff83",
+    "worktree_dirty": true
+  }
+}

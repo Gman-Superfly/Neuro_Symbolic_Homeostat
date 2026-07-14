@@ -1,4 +1,4 @@
-"""Configuration groups for the energy coordinator."""
+"""Unwired coordinator configuration groups archived from the active package."""
 
 from __future__ import annotations
 
@@ -7,20 +7,9 @@ from typing import Callable, Optional
 
 import numpy as np
 
-__all__ = [
-    "StepConfig",
-    "StabilityConfig",
-    "NoiseConfig",
-    "ProxConfig",
-    "AdmmConfig",
-    "WeightConfig",
-]
-
 
 @dataclass(frozen=True)
 class StepConfig:
-    """Gradient-step and backtracking controls."""
-
     grad_eps: float = 1e-4
     step_size: float = 0.05
     normalize_grads: bool = False
@@ -33,8 +22,6 @@ class StepConfig:
 
 @dataclass(frozen=True)
 class StabilityConfig:
-    """Stability guard, contraction margin, and Lipschitz-step controls."""
-
     stability_guard: bool = True
     stability_cap_fraction: float = 0.9
     log_contraction_margin: bool = False
@@ -46,8 +33,6 @@ class StabilityConfig:
 
 @dataclass(frozen=True)
 class NoiseConfig:
-    """Noise projection and precision-aware exploration controls."""
-
     noise_mode: Optional[str] = None
     enable_orthogonal_noise: bool = True
     noise_magnitude: float = 0.0
@@ -62,8 +47,6 @@ class NoiseConfig:
 
 @dataclass(frozen=True)
 class ProxConfig:
-    """Operator-splitting and proximal relaxation controls."""
-
     operator_splitting: bool = False
     prox_tau: float = 0.05
     prox_steps: int = 50
@@ -72,8 +55,6 @@ class ProxConfig:
 
 @dataclass(frozen=True)
 class AdmmConfig:
-    """ADMM-style splitting controls."""
-
     use_admm: bool = False
     admm_rho: float = 1.0
     admm_steps: int = 50
@@ -84,8 +65,6 @@ class AdmmConfig:
 
 @dataclass(frozen=True)
 class WeightConfig:
-    """Term-weight calibration controls."""
-
     term_weight_floor: float = 0.0
     term_weight_ceiling: Optional[float] = None
     auto_balance_term_weights: bool = False

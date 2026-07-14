@@ -1,0 +1,10 @@
+{
+  "edge_count_exponent": 0.535503968752563,
+  "intercept": -9.863751951619244,
+  "model_scope": "descriptive_only",
+  "r_squared": 0.9942421630143604,
+  "response": "relax_median_sec_per_step",
+  "row_count": 9,
+  "size_exponent": 0.4129250391782022,
+  "status": "fitted"
+}

@@ -1,7 +1,7 @@
-"""Demonstrate metric-orthogonal (M-orthogonal) noise projection and re-projection.
+"""Demonstrate metric-consistent tangent-noise projection and re-projection.
 
 Shows:
-- Euclidean vs M-orthogonal projection property (dot products ~ 0)
+- Euclidean and metric projections have zero first-order energy component
 - A tiny relaxation run with metric-aware projection enabled
 """
 
@@ -48,20 +48,23 @@ def demo_metric_projection_property() -> None:
     z_m = project_noise_metric_orthogonal(z, g, M=M)
 
     dot_e = float(np.dot(z_e, g))
-    Mg = M @ g
-    dot_m = float(np.dot(z_m, Mg))
+    metric_grad = np.linalg.solve(M, g)
+    dot_m = float(np.dot(z_m, g))
+    metric_dot = float(np.dot(z_m, M @ metric_grad))
 
-    print("=== Metric-Orthogonal Projection Property ===")
+    print("=== Metric-Consistent Tangent Projection ===")
     print(f"||g||^2 = {float(np.dot(g, g)):.4f}")
     print(f"Euclidean: z_e dot g = {dot_e:.4e} (~ 0)")
-    print(f"Metric:    z_m^T M g = {dot_m:.4e} (~ 0)")
+    print(f"Metric:    z_m dot g = {dot_m:.4e} (~ 0)")
+    print(f"Geometry:  <z_m, grad_M>_M = {metric_dot:.4e} (~ 0)")
     print()
 
 
 def demo_metric_projection_in_relaxation() -> None:
-    # Two variables with a spring; enable M-orthogonal projection and precision-aware redistribution
+    # Two variables with a spring; combine metric projection and precision scaling.
     mods = [LocalQuadratic(target=0.8, curvature_c=2.0), LocalQuadratic(target=0.2, curvature_c=3.0)]
     coups = [(0, 1, QuadraticCoupling(weight=0.5))]
+    metric = np.diag([1.0, 10.0])
 
     coord = EnergyCoordinator(
         modules=mods,
@@ -74,18 +77,18 @@ def demo_metric_projection_in_relaxation() -> None:
         noise_magnitude=1e-2,                 # small noise
         auto_noise_controller=True,           # schedule magnitude automatically
         precision_aware_noise_controller=True,  # exercise re-projection after weighting
-        metric_aware_noise_controller=True,     # use M-orthogonal projection
+        metric_aware_noise_controller=True,     # use metric-consistent projection
+        metric_matrix=metric,
     )
-    # Provide an SPD metric
-    coord.metric_matrix = np.diag([1.0, 10.0])
 
     etas0: List[float] = [0.0, 1.0]
 
+    np.random.seed(0)
     E0 = coord.energy(etas0)
     etas1 = coord.relax_etas(list(etas0), steps=25)
     E1 = coord.energy(etas1)
 
-    print("=== Metric-Orthogonal Noise in Relaxation ===")
+    print("=== Metric-Precision Tangent Noise in Relaxation ===")
     print(f"E0 = {E0:.6f} -> E1 = {E1:.6f} (dE = {E1 - E0:.6f})")
     print(f"Final etas = {[f'{e:.3f}' for e in etas1]}")
     print()

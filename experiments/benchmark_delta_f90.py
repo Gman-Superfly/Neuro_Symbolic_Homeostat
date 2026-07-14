@@ -2,7 +2,7 @@
 
 Usage:
     uv run python -m experiments.benchmark_delta_f90
-    uv run python -m experiments.benchmark_delta_f90 --configs default analytic vect hinge coord
+    uv run python -m experiments.benchmark_delta_f90 --configs analytic prox smallgain
 
 Outputs a CSV under logs/benchmark_delta_f90.csv with:
     run_id, config_name, steps, wall_time_sec, delta_f90_steps
@@ -17,13 +17,11 @@ from typing import List, Dict, Any, Tuple
 from modules.gating.energy_gating import EnergyGatingModule
 from core.couplings import QuadraticCoupling, GateBenefitCoupling
 from core.coordinator import EnergyCoordinator
+from core.energy import total_energy
 from cf_logging.metrics_log import log_records
 from cf_logging.observability import EnergyBudgetTracker
-from core.weight_adapters import GradNormWeightAdapter, AGMPhaseWeightAdapter
-try:
-    from core.weight_adapters import SmallGainWeightAdapter  # type: ignore
-except Exception:
-    SmallGainWeightAdapter = None  # fallback if not present
+from core.weight_adapters import AGMPhaseWeightAdapter, GradNormWeightAdapter, SmallGainWeightAdapter
+from core.solver_config import SolverConfig
 
 
 def make_modules_and_couplings() -> Tuple[List[Any], List[Tuple[int, int, Any]], Dict[str, Any], List[Any]]:
@@ -74,7 +72,8 @@ def delta_f90(energies: List[float]) -> int:
 def _per_term_breakdown(coord: EnergyCoordinator, etas: List[float]) -> Dict[str, float]:
     """Return per-term energy contributions and gradient norms keyed by term names."""
     out: Dict[str, float] = {}
-    cw = coord._combined_term_weights()  # instrumentation
+    snapshot = coord.inspect_state(etas)
+    cw = snapshot.term_weights
     # Local energies
     for idx, m in enumerate(coord.modules):
         key = f"local:{m.__class__.__name__}"
@@ -88,10 +87,20 @@ def _per_term_breakdown(coord: EnergyCoordinator, etas: List[float]) -> Dict[str
         e = float(coup.coupling_energy(float(etas[i]), float(etas[j]), coord.constraints)) * w
         out[f"energy:{key}"] = out.get(f"energy:{key}", 0.0) + e
     # Gradient norms per term
-    norms = coord._term_grad_norms(etas)  # instrumentation
+    norms = snapshot.term_gradient_norms
     for k, v in norms.items():
         out[f"grad_norm:{k}"] = float(v)
     return out
+
+
+def _fixed_reference_energy(
+    etas: List[float],
+    modules: List[Any],
+    couplings: List[Tuple[int, int, Any]],
+    constraints: Dict[str, Any],
+) -> float:
+    """Evaluate the original objective without adapter-maintained weights."""
+    return float(total_energy(etas, modules, couplings, dict(constraints)))
 
 
 def run_config(
@@ -125,7 +134,7 @@ def run_config(
         adapter = GradNormWeightAdapter()
     elif adapter_name == "agm":
         adapter = AGMPhaseWeightAdapter()
-    elif adapter_name == "smallgain" and SmallGainWeightAdapter is not None:
+    elif adapter_name == "smallgain":
         # Allow parameter overrides when provided
         if sg_rho is not None or sg_dw is not None:
             adapter = SmallGainWeightAdapter(
@@ -154,25 +163,51 @@ def run_config(
                 pass
         tracker.attach(coord)
     etas = coord.compute_etas(inputs)
-    energies: List[float] = []
-    coord.on_energy_updated.append(lambda F: energies.append(F))
+    initial_state = tuple(float(value) for value in etas)
+    latest_state = list(etas)
+    adaptive_energies: List[float] = [coord.inspect_state(etas).energy]
+    reference_energies: List[float] = [_fixed_reference_energy(etas, mods, coups, constraints)]
+
+    def capture_state(values: List[float]) -> None:
+        latest_state[:] = [float(value) for value in values]
+
+    def capture_accepted_energy(energy: float) -> None:
+        # Proximal and ADMM paths emit their initial state. Avoid counting that
+        # initialization as an accepted optimization step in either trace.
+        is_initial_echo = (
+            len(adaptive_energies) == 1
+            and tuple(latest_state) == initial_state
+            and abs(float(energy) - adaptive_energies[0]) <= 1e-15
+        )
+        if is_initial_echo:
+            return
+        adaptive_energies.append(float(energy))
+        reference_energies.append(_fixed_reference_energy(latest_state, mods, coups, constraints))
+
+    coord.on_eta_updated.append(capture_state)
+    coord.on_energy_updated.append(capture_accepted_energy)
     start = time.perf_counter()
-    coord.relax_etas(etas, steps=steps)
+    etas = coord.relax_etas(etas, steps=steps)
     duration = time.perf_counter() - start
-    if not energies:
-        energies = [coord.energy(etas)]
-    total_improvement = 0.0
-    if energies:
-        total_improvement = max(energies[0] - energies[-1], 0.0)
+    total_improvement = max(reference_energies[0] - reference_energies[-1], 0.0)
     redemption_gain = total_improvement / duration if duration > 0.0 else float("nan")
+    relaxation_metrics = coord.last_relaxation_metrics()
     row: Dict[str, Any] = {
         "config": name,
         "steps": steps,
         "wall_time_sec": duration,
         "compute_cost": duration,
         "redemption_gain": redemption_gain,
-        "delta_f90_steps": delta_f90(energies),
-        "energy_final": energies[-1],
+        "accepted_steps": len(reference_energies) - 1,
+        "delta_f90_steps": delta_f90(reference_energies),
+        "adaptive_delta_f90_steps": delta_f90(adaptive_energies),
+        "energy_initial": reference_energies[0],
+        "energy_final": reference_energies[-1],
+        "reference_energy_final": reference_energies[-1],
+        "reference_energy_drop": reference_energies[0] - reference_energies[-1],
+        "adaptive_energy_final": adaptive_energies[-1],
+        "adaptive_energy_drop": adaptive_energies[0] - adaptive_energies[-1],
+        "objective_versions": int(relaxation_metrics["objective_version"]) + 1,
     }
     # Backtracks (if tracked by coordinator)
     last_bk = getattr(coord, "_last_step_backtracks", None)
@@ -190,8 +225,7 @@ def run_config(
     # Append per-term breakdown at the end of relaxation
     breakdown = _per_term_breakdown(coord, etas)
     row.update(breakdown)
-    # Mark mode flags for analysis
-    row["operator_splitting"] = bool(getattr(coord, "operator_splitting", False))
+    row["solver_mode"] = coord.solver.mode.value
     row["adapter"] = str(adapter_name or "none")
     if tracker is not None:
         tracker.flush()
@@ -219,35 +253,14 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "line_search": True,
         "normalize_grads": True,
     },
-    "coord": {
-        "use_analytic": True,
-        "use_vectorized_quadratic": True,
-        "neighbor_gradients_only": True,
-        "use_coordinate_descent": True,
-        "coordinate_steps": 60,
-    },
-    "adaptive": {
-        "use_analytic": True,
-        "use_vectorized_quadratic": True,
-        "use_vectorized_hinges": True,
-        "neighbor_gradients_only": True,
-        "adaptive_coordinate_descent": True,
-        "coordinate_steps": 30,
-        "line_search": True,
-    },
-    # Operator-splitting / proximal mode
+    # Proximal solver modes
     "prox": {
         "use_analytic": True,
-        "operator_splitting": True,
-        "prox_steps": 60,
-        "prox_tau": 0.05,
+        "solver": SolverConfig.proximal_solver(steps=60, tau=0.05),
     },
     "prox_star": {
         "use_analytic": True,
-        "operator_splitting": True,
-        "prox_steps": 60,
-        "prox_tau": 0.05,
-        "prox_block_mode": "star",
+        "solver": SolverConfig.proximal_solver(steps=60, tau=0.05, block_mode="star"),
     },
     # Adapter comparisons (gradient-based relaxation path)
     "gradnorm": {
@@ -278,10 +291,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
     },
     "admm": {
         "use_analytic": True,
-        "use_admm": True,
-        "admm_steps": 60,
-        "admm_rho": 1.0,
-        "admm_step_size": 0.05,
+        "solver": SolverConfig.admm_solver(steps=60, rho=1.0, step_size=0.05),
     },
 }
 
@@ -299,13 +309,21 @@ def main() -> None:
     parser.add_argument("--warn_on_margin_shrink", action="store_true", help="Emit margin_warn=1 when contraction_margin < threshold")
     parser.add_argument("--margin_warn_threshold", type=float, default=None, help="Threshold for contraction margin warnings (default 1e-4)")
     # SmallGain sweep knobs (optional)
-    parser.add_argument("--sg_rho", type=float, default=None, help="SmallGain budget_fraction (ρ), e.g. 0.5/0.7/0.9")
-    parser.add_argument("--sg_dw", type=float, default=None, help="SmallGain max_step_change (per-step Δweight), e.g. 0.05/0.10/0.20")
+    parser.add_argument("--sg_rho", type=float, default=None, help="SmallGain budget fraction, e.g. 0.5/0.7/0.9")
+    parser.add_argument("--sg_dw", type=float, default=None, help="SmallGain maximum per-step weight change, e.g. 0.05/0.10/0.20")
     # ADMM knobs (optional)
-    parser.add_argument("--admm_gate_prox", action="store_true", help="Enable prox-linear update for gate-benefit in ADMM")
-    parser.add_argument("--admm_gate_damping", type=float, default=None, help="Blend (0..1) for ADMM gate prox step; default 0.5")
-    # Logit updates (optional)
-    parser.add_argument("--use_logit_updates", action="store_true", help="Enable mirror/logit parameterization for η updates in gradient mode")
+    parser.add_argument(
+        "--admm-gate-prox",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable the proximal-linear gate update in ADMM mode.",
+    )
+    parser.add_argument(
+        "--admm-gate-damping",
+        type=float,
+        default=None,
+        help="Blend in [0, 1] for the ADMM proximal-linear gate update.",
+    )
     args = parser.parse_args()
 
     rows: List[Dict[str, Any]] = []
@@ -318,13 +336,18 @@ def main() -> None:
             if args.sg_dw is not None:
                 preset["sg_dw"] = float(args.sg_dw)
         if cfg == "admm":
-            if args.admm_gate_prox:
-                preset["admm_gate_prox"] = True
-            if args.admm_gate_damping is not None:
-                preset["admm_gate_damping"] = float(args.admm_gate_damping)
-        # apply logit updates only to gradient-based configs
-        if args.use_logit_updates and cfg in ("default", "analytic", "vect", "coord", "adaptive", "gradnorm", "agm", "smallgain"):
-            preset["use_logit_updates"] = True
+            admm = preset["solver"].admm
+            preset["solver"] = SolverConfig.admm_solver(
+                steps=admm.steps,
+                rho=admm.rho,
+                step_size=admm.step_size,
+                gate_prox=(admm.gate_prox if args.admm_gate_prox is None else bool(args.admm_gate_prox)),
+                gate_damping=(
+                    float(args.admm_gate_damping)
+                    if args.admm_gate_damping is not None
+                    else admm.gate_damping
+                ),
+            )
         result = run_config(
             cfg,
             preset,
@@ -341,7 +364,9 @@ def main() -> None:
         rows.append(result)
         print(
             f"[{cfg}] dF90 steps={result['delta_f90_steps']}, "
-            f"wall_time={result['wall_time_sec']:.4f}s, energy_final={result['energy_final']:.6f}"
+            f"wall_time={result['wall_time_sec']:.4f}s, "
+            f"reference_energy_final={result['reference_energy_final']:.6f}, "
+            f"adaptive_energy_final={result['adaptive_energy_final']:.6f}"
         )
     path = log_records("benchmark_delta_f90", rows)
     print(f"Logged {len(rows)} rows to {path}")

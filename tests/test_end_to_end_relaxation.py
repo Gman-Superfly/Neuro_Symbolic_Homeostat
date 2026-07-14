@@ -33,6 +33,26 @@ class QuadraticModule(EnergyModule, SupportsLocalEnergyGrad, SupportsPrecision):
         return self.curvature_value
 
 
+@dataclass
+class OneShotCouplingWeightAdapter:
+    """Increase one coupling-family weight after the first accepted proposal."""
+
+    updated: bool = False
+
+    def step(
+        self,
+        term_grad_norms: Mapping[str, float],
+        energy: float,
+        current: Mapping[str, float],
+    ) -> Mapping[str, float]:
+        del term_grad_norms, energy
+        weights = dict(current)
+        if not self.updated:
+            weights["coup:QuadraticCoupling"] = 4.0
+            self.updated = True
+        return weights
+
+
 def test_safe_defaults_keep_accepted_energy_monotone() -> None:
     modules = [QuadraticModule(0.2), QuadraticModule(0.8)]
     coord = EnergyCoordinator(
@@ -55,6 +75,9 @@ def test_safe_defaults_keep_accepted_energy_monotone() -> None:
     assert len(accepted) > 2
     for before, after in zip(accepted, accepted[1:]):
         assert after <= before + 1e-12
+    metrics = coord.last_relaxation_metrics()
+    assert metrics["accepted_steps"] == len(accepted)
+    assert metrics["energy_trace"] == accepted
 
 
 def test_gradient_norm_decreases_on_quadratic_relaxation() -> None:
@@ -76,6 +99,49 @@ def test_gradient_norm_decreases_on_quadratic_relaxation() -> None:
     grad1 = float(np.linalg.norm(np.asarray(coord._grads(etas1), dtype=float)))  # type: ignore[attr-defined]
 
     assert grad1 < grad0
+
+
+def test_adaptive_guard_compares_each_proposal_under_one_objective_version() -> None:
+    coord = EnergyCoordinator(
+        modules=[QuadraticModule(0.2), QuadraticModule(0.8)],
+        couplings=[(0, 1, QuadraticCoupling(weight=0.2))],
+        constraints={},
+        weight_adapter=OneShotCouplingWeightAdapter(),
+        use_analytic=True,
+        use_precision_preconditioning=False,
+        enable_orthogonal_noise=False,
+        noise_mode="none",
+        step_size=0.02,
+        stability_guard=True,
+        assert_monotonic_energy=True,
+    )
+
+    coord.relax_etas([0.9, 0.1], steps=4)
+
+    metrics = coord.last_relaxation_metrics()
+    transitions = metrics["guard_transitions"]
+    assert metrics["accepted_steps"] == 4
+    assert metrics["objective_version"] == 1
+    assert [transition["objective_version"] for transition in transitions] == [0, 1, 1, 1]
+    for transition in transitions:
+        assert transition["energy_after"] <= transition["energy_before"] + 1e-12
+
+
+def test_free_energy_guard_accepts_equal_state_within_tolerance() -> None:
+    coord = EnergyCoordinator(
+        modules=[QuadraticModule(0.5)],
+        couplings=[],
+        constraints={},
+        use_free_energy_guard=True,
+        free_energy_epsilon=1e-6,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+
+    result = coord.relax_etas([0.5], steps=1)
+
+    assert result == [0.5]
+    assert coord.last_relaxation_metrics()["accepted_steps"] == 1
 
 
 def test_contraction_margin_positive_across_coupling_sweep() -> None:
@@ -140,6 +206,32 @@ def test_too_large_isotropic_noise_rejects_and_restores_state() -> None:
 
     assert getattr(coord, "_rejected_steps") == 1
     assert etas1 == etas0
+
+
+def test_rejection_can_restore_and_continue_remaining_attempts(monkeypatch: Any) -> None:
+    monkeypatch.setattr(np.random, "normal", lambda *args, **kwargs: np.ones(kwargs["size"], dtype=float))
+    coord = EnergyCoordinator(
+        modules=[QuadraticModule(0.5)],
+        couplings=[],
+        constraints={},
+        use_analytic=True,
+        enable_orthogonal_noise=False,
+        noise_mode="isotropic",
+        noise_magnitude=1.0,
+        step_size=0.05,
+        stability_guard=False,
+        assert_monotonic_energy=False,
+        continue_after_rejection=True,
+    )
+
+    result = coord.relax_etas([0.5], steps=3)
+    metrics = coord.last_relaxation_metrics()
+
+    assert result == [0.5]
+    assert metrics["accepted_steps"] == 0
+    assert metrics["rejected_steps"] == 3
+    assert metrics["attempted_steps"] == 3
+    assert metrics["attempt_energy_trace"] == [0.0, 0.0, 0.0]
 
 
 def test_sparse_smallgain_preserves_monotone_energy_but_is_not_speed_claim() -> None:

@@ -29,11 +29,11 @@ We use four focused systems to coordinate the homeostat. Each addresses a specif
 **The effect**: The system explores flat null-space directions while removing the first-order uphill component of the perturbation.
 *See `docs/README_TANGENT_NOISE_PSON.md` for technical details.*
 
-### B. Small-Gain stability (the projector)
-**Role**: Bounded dynamics / "the guard rail"
+### B. Curvature-based stability guard and optional allocator
+**Role**: Bounded update steps and budgeted coupling adaptation
 **The problem**: Strong couplings can create unstable feedback loops and divergence.
-**The solution**: We enforce Gershgorin-based conservative bounds on couplings. In linear and SPD settings, these bounds support contraction conditions.
-**The effect**: We can adjust coupling strengths with explicit step margins and runtime checks.
+**The solution**: The coordinator composes Gershgorin-style curvature bounds and caps the update step. The optional Small-Gain allocator uses remaining estimated margin as a global budget for coupling-family weight increases.
+**The effect**: The step cap supports the scoped quadratic contraction condition. Allocator behavior remains an empirical weighting policy with explicit spend telemetry.
 *See `docs/STABILITY_GUARANTEES.md`.*
 
 ### C. Counterfactual gate-benefit coupling (CGBC)
@@ -43,10 +43,10 @@ We use four focused systems to coordinate the homeostat. Each addresses a specif
 **The effect**: A supplied downstream estimate can push gate updates even when the gate is currently closed.
 *See `docs/README_WORMHOLE.md`.*
 
-### D. Stiffness-based updates (GaBP equivalence)
+### D. Stiffness-based updates (Jacobi form)
 **Role**: Stiffness-aware updates
 **The Problem**: First-order gradient descent is slow in narrow valleys (poor conditioning). Full Newton steps are expensive for large systems.
-**The Solution**: We use the algebraic equivalence between **Gaussian Belief Propagation (GaBP)** and **Jacobi/Gauss-Seidel** linear solvers in quadratic/SPD blocks.
+**The Solution**: We use diagonal curvature to implement the Jacobi form exactly on quadratic/SPD systems. Gaussian BP solves the related Gaussian mean problem with explicit messages but is not implemented here.
 **The effect**: By tracking diagonal precision, we approximate Hessian diagonals and improve quadratic sub-problem updates using vectorized operations.
 *See `docs/README_GABP_EQUIVALENCE.md`.*
 
@@ -56,28 +56,28 @@ We use four focused systems to coordinate the homeostat. Each addresses a specif
 
 On their own, these methods have limitations:
 - **PSON** is just noise; it doesn't guide you to the goal.
-- **Small-Gain** restricts expressivity; it bounds updates but does not choose the objective.
+- **Small-Gain allocator** changes coupling-family weights under a predicted global curvature-spend budget; its task benefit remains empirical.
 - **CGBC/wormhole terms** are caller-driven forces; they can pull gates in wrong directions if the benefit estimate is wrong.
-- **GaBP** matches classical linear-solver updates for quadratic/SPD blocks under its assumptions; it does not cover non-convex gates.
+- **Stiffness/Jacobi updates** apply directly to quadratic systems and act as diagonal curvature scaling in mixed regimes; they do not implement Gaussian BP.
 
 **Combined, they provide:**
 1.  **CGBC/wormhole terms** provide non-local gate gradients that can increase gate values when the benefit estimate has the right sign.
-2.  **GaBP/Stiffness** rescales conditioned quadratic updates once paths are active.
-3.  **Small-Gain** keeps updates within conservative stability bounds during reconfiguration.
+2.  **Stiffness scaling** rescales conditioned quadratic updates once paths are active.
+3.  **The step cap and accepted-step guard** keep proposals within the repository's scoped stability contract.
 4.  **PSON** reduces stall risk in shallow minima while updates continue.
 
-The result is a system that can change coupling structure, keep explicit guards active, and continue optimization under mixed dynamics.
+The result is a system that can adapt effective coupling weights, keep explicit guards active, and continue optimization under mixed dynamics.
 
 ---
 
-## 4. Inverse kinematics and homotopy
+## 4. Related future directions
 
-This objective-shaping philosophy extends to broader control problems in `complexity-from-constraints`:
+The broader `complexity-from-constraints` work considers two related directions that are not implemented in this repository:
 
 - **Inverse kinematics**: Instead of directly computing joint angles, we define energy constraints on end-effectors. In this formulation, relaxation over the kinematic chain drives the system toward a feasible pose.
 - **Homotopy (continuation)**: We slowly introduce complex constraints into the objective. Starting from an easier objective and morphing toward the harder one reduces early trapping in poor local minima.
 
-While this demo repository focuses on core coordination, these techniques follow the same entity-first, energy-based principles and share the same practical pattern: change the objective shape, keep updates bounded, and preserve observability.
+These directions require separate implementations and validation. The active code in this repository covers the four mechanism groups above.
 
 ---
 
@@ -85,7 +85,7 @@ While this demo repository focuses on core coordination, these techniques follow
 
 A key design choice is using local algebraic equivalents where the assumptions hold.
 - Implementing full Newton steps is expensive. Implementing GaBP with message objects has Python overhead.
-- Implementing the *algebraic equivalent* (stiffness-scaled updates) allows us to use vectorized NumPy kernels.
+- Implementing the Jacobi form directly as stiffness-scaled updates allows us to use vectorized NumPy kernels in supported paths.
 - Small-Gain checks are O(N) local sums, not O(N³) eigenvalue decompositions.
 
 By choosing techniques that have local equivalents, we use global signals (via CGBC/wormhole terms and stiffness propagation) while keeping the inner loops local.
@@ -96,7 +96,7 @@ By choosing techniques that have local equivalents, we use global signals (via C
 
 We do more than execute plain gradient descent. We:
 1.  Shape the objective (CGBC/wormhole terms, Small-Gain).
-2.  Scale updates by stiffness (Stiffness/GaBP).
+2.  Scale updates by diagonal stiffness (Jacobi form on quadratic systems).
 3.  Add tangent perturbations (PSON).
 
 This is the objective-shaping strategy used by this repository.
