@@ -87,7 +87,7 @@ The following applications are prospective and have not been validated by the cu
 
 The current evidence supports mechanism behavior on synthetic problem families. Real-model accuracy, planning quality, control performance, and operational safety remain evaluation targets.
 
-### The philosophy: don’t just descend, shape the objective
+### The philosophy: descend, Surf
 
 Standard optimization asks: *"Given a fixed energy function, how do I find the minimum?"*
 **Our approach: shape and move**
@@ -124,7 +124,7 @@ The optional `SmallGainWeightAdapter` is separate. It reallocates coupling-famil
 
 ## Documentation map
 
-We believe in documenting *why*, not just *how*.
+We believe in documenting *why*, for our sanity.
 
 ### Theory and mechanisms
 *   **[Thesis](The_Neuro_Symbolic_Homeostat_Paper_V1.md)**: Draft paper describing the current system and scope limits.
@@ -140,12 +140,13 @@ We believe in documenting *why*, not just *how*.
 *   **[Safe Defaults](docs/README_SAFE_DEFAULTS.md)**: The recommended configuration for reproducible results.
 *   **[Proximal and ADMM-like solvers](docs/README_OPERATOR_SPLITTING.md)**: Explicit solver selection, residual telemetry, and the current conformance boundary.
 *   **[Reproducibility](docs/REPRODUCIBILITY.md)**: Local verification, artifact regeneration, figures, and manifest fields.
+*   **[Distributed linear algebra processor](docs/DISTRIBUTED_LINEAR_ALGEBRA_PROCESSOR.md)**: Implementation specification for extending the energy, gradient, curvature, and acceptance contracts across versioned worker processes.
 
 ---
 
 ## Experiments and demos
 
-We assert early, fail fast, and validate empirically.
+We assert early and fail hard, no mercy.
 
 ### Ready-to-Run (Windows PowerShell)
 
@@ -241,11 +242,9 @@ Use `-Regenerate` to rerun the full recorded experiment set before verification.
 
 ## Citation
 
-If you use this repository in research, cite the software metadata in `CITATION.cff`. The manuscript and repository report mechanism-level synthetic validation, not broad task-level superiority.
+If you use this repository in research, we love you.
 
 **Authors:** Oscar Goldman, Shogu Research Group @ Datamutant.ai (subsidiary of 温心重工業).
-
-**Reference (author-year format):** Goldman, O. (2025). *Complexity from Constraints: The Neuro-Symbolic Homeostat*. Software repository. Shogu Research Group @ Datamutant.ai (subsidiary of 温心重工業). Composable energy relaxation with precision-scaled orthogonal noise and stability guards.
 
 ---
 
