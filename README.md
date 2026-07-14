@@ -31,7 +31,7 @@ What remains empirical:
 - Whether CGBC helps when benefit estimates are noisy or wrong.
 - Whether the combined system beats simpler baselines.
 
-The current demos test specific synthetic cases. They do not show universal benefit.
+The current demos test specific synthetic cases.
 
 The optimization mathematics used here is standard: diagonal preconditioning, Gershgorin row-sum bounds, and the gradient descent condition \(\alpha < 2/L\). The repository-specific design is the composable curvature contract: modules expose local stiffness, couplings expose curvature bounds, and the coordinator composes those reports into precision-aware updates and stability caps. Current tests show both sides of this contract: in a tight quadratic regime, curvature awareness lets the system converge where plain gradient descent stalls above \(2/L\); in a mixed constraint regime, the conservative cap can trade speed for margin while preconditioning still converges.
 
