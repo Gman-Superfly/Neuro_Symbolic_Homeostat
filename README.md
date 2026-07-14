@@ -24,7 +24,7 @@ What is analytically supported:
 - **The curvature-based step cap** gives a contraction condition under linear/SPD assumptions when the Gershgorin bound is valid.
 - **Stiffness updates** match the Jacobi trajectory under quadratic/SPD assumptions; Gaussian BP remains related literature context.
 
-What remains empirical:
+What remains empirical to be fully explored by other repos:
 
 - Whether these mechanisms reduce step count.
 - Whether final energy decreases more than baseline methods across problem classes.
@@ -87,7 +87,7 @@ The following applications are prospective and have not been validated by the cu
 
 The current evidence supports mechanism behavior on synthetic problem families. Real-model accuracy, planning quality, control performance, and operational safety remain evaluation targets.
 
-### The philosophy: descend, Surf
+### The philosophy: descending is for boomers on escalators, Surf like a chad
 
 Standard optimization asks: *"Given a fixed energy function, how do I find the minimum?"*
 **Our approach: shape and move**
@@ -146,7 +146,7 @@ We believe in documenting *why*, for our sanity.
 
 ## Experiments and demos
 
-We assert early and fail hard, no mercy.
+We assert early and fail hard, no mercy. 
 
 ### Ready-to-Run (Windows PowerShell)
 
