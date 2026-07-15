@@ -30,7 +30,7 @@ def total_energy(
     # Optional term weights: {'local:ClassName': w, 'coup:ClassName': w}
     weights: Dict[str, float] = {}
     tw = constraints.get("term_weights", None)
-    if isinstance(tw, dict):
+    if isinstance(tw, Mapping):
         # best-effort copy of float-like values
         for k, v in tw.items():
             try:
@@ -60,14 +60,15 @@ def project_noise_orthogonal(
     
     z_orth = z - (z · g) * g / ||g||²
     
-    This ensures exploration happens along the level sets of the energy function
-    (iso-energy contours), avoiding ascent/descent directions.
+    For gradients above the numerical threshold, this makes the first-order
+    directional derivative zero. It does not imply zero second-order energy
+    change or Hessian-null curvature.
     """
     # Compute gradient norm squared
     grad_norm_sq = np.sum(grad * grad)
     
-    if grad_norm_sq < eps:
-        # Gradient is zero (at min/max/saddle) => all directions are valid
+    if grad_norm_sq < eps * eps:
+        # At a numerically stationary point there is no reliable tangent normal.
         return noise
         
     # Compute projection scalar: (z · g) / ||g||²
@@ -109,7 +110,7 @@ def project_noise_metric_orthogonal(
         return project_noise_orthogonal(z, g, eps=eps)
 
     grad_norm_sq = float(np.dot(g, g))
-    if grad_norm_sq < eps:
+    if grad_norm_sq < eps * eps:
         return z
 
     if metric_solve is not None:

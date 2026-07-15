@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Mapping, Tuple
 
 from .interfaces import EnergyCoupling, OrderParameter
@@ -154,6 +155,16 @@ class GateBenefitCoupling(EnergyCoupling):
         gj = 0.0
         return gi, gj
 
+    def coupling_curvature_bounds(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float, float]:
+        """Return the exact zero Hessian of the frozen linear gate term."""
+        del eta_i, eta_j, constraints
+        return 0.0, 0.0, 0.0
+
 
 @dataclass(frozen=True)
 class DampedGateBenefitCoupling(EnergyCoupling):
@@ -169,6 +180,23 @@ class DampedGateBenefitCoupling(EnergyCoupling):
     eta_power: float = 1.0
     positive_scale: float = 1.0
     negative_scale: float = 1.0
+
+    def __post_init__(self) -> None:
+        parameters = {
+            "weight": self.weight,
+            "damping": self.damping,
+            "eta_power": self.eta_power,
+            "positive_scale": self.positive_scale,
+            "negative_scale": self.negative_scale,
+        }
+        if not all(math.isfinite(float(value)) for value in parameters.values()):
+            raise ValueError("damped gate-benefit parameters must be finite")
+        if self.weight < 0.0 or self.damping < 0.0:
+            raise ValueError("weight and damping must be non-negative")
+        if self.positive_scale < 0.0 or self.negative_scale < 0.0:
+            raise ValueError("positive_scale and negative_scale must be non-negative")
+        if self.eta_power < 1.0:
+            raise ValueError("eta_power must be at least 1.0 on the closed unit box")
 
     def _scaled_delta(self, delta: float) -> float:
         if delta >= 0.0:
@@ -216,5 +244,29 @@ class DampedGateBenefitCoupling(EnergyCoupling):
                     eta_gate ** (self.eta_power - 1.0)
                 )
         return float(grad), 0.0
+
+    def coupling_curvature_bounds(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float, float]:
+        """Return a box-wide absolute Hessian bound for the gate coordinate.
+
+        For ``1 < eta_power < 2`` the second derivative diverges as the gate
+        approaches zero, so no finite gradient-Lipschitz bound exists on the
+        closed unit interval. The infinite result makes that limitation
+        explicit to the stability guard; projected Armijo search remains the
+        supported gradient-solver path for those powers.
+        """
+        del eta_i, eta_j
+        scaled_delta = self._scaled_delta(float(constraints.get(self.delta_key, 0.0)))
+        coefficient = self.weight * self.damping * scaled_delta
+        if coefficient == 0.0 or self.eta_power == 1.0:
+            return 0.0, 0.0, 0.0
+        if self.eta_power < 2.0:
+            return math.inf, 0.0, 0.0
+        bound = abs(coefficient) * self.eta_power * (self.eta_power - 1.0)
+        return float(bound), 0.0, 0.0
 
 

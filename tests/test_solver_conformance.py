@@ -1,14 +1,47 @@
 from __future__ import annotations
 
-from typing import Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import pytest
 
 from core.coordinator import EnergyCoordinator
 from core.couplings import QuadraticCoupling
+from core.interfaces import EnergyCoupling, EnergyModule, OrderParameter
 from core.solver_config import ADMMSolverConfig, ProximalSolverConfig, SolverConfig
 from experiments.ablate_pson_noise import QuadraticWell
+
+
+@dataclass(frozen=True)
+class BoxOnlyQuadraticWell(EnergyModule):
+    target: float
+
+    def compute_eta(self, x: Any) -> OrderParameter:
+        return float(x)
+
+    def local_energy(self, eta: OrderParameter, constraints: Mapping[str, Any]) -> float:
+        del constraints
+        value = float(eta)
+        if value < 0.0 or value > 1.0:
+            raise ValueError("eta outside [0, 1]")
+        return 0.5 * (value - self.target) ** 2
+
+
+@dataclass(frozen=True)
+class BoxOnlySeparableCoupling(EnergyCoupling):
+    def coupling_energy(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> float:
+        del constraints
+        i = float(eta_i)
+        j = float(eta_j)
+        if i < 0.0 or i > 1.0 or j < 0.0 or j > 1.0:
+            raise ValueError("eta outside [0, 1]")
+        return 0.5 * (i * i + j * j)
 
 
 def _analytic_solution() -> np.ndarray:
@@ -84,6 +117,45 @@ def test_split_solver_restores_rejected_candidate(solver: SolverConfig) -> None:
     assert result == initial
     assert coordinator.last_solver_metrics()["accepted_steps"] == 0
     assert coordinator.last_solver_metrics()["rejected_steps"] == 1
+
+
+@pytest.mark.parametrize(
+    "solver",
+    [
+        SolverConfig.proximal_solver(steps=1, tau=0.1),
+        SolverConfig.admm_solver(steps=1, rho=1.0, step_size=0.1, gate_prox=False),
+    ],
+)
+def test_split_solver_finite_difference_moves_inward_from_upper_boundary(
+    solver: SolverConfig,
+) -> None:
+    coordinator = EnergyCoordinator(
+        modules=[BoxOnlyQuadraticWell(target=0.0)],
+        couplings=[],
+        constraints={},
+        solver=solver,
+        noise_mode="none",
+    )
+
+    result = coordinator.relax_etas([1.0])
+
+    assert result[0] < 1.0
+    assert coordinator.energy(result) < coordinator.energy([1.0])
+
+
+def test_admm_coupling_fallback_is_box_aware_at_upper_boundary() -> None:
+    coordinator = EnergyCoordinator(
+        modules=[BoxOnlyQuadraticWell(target=1.0), BoxOnlyQuadraticWell(target=1.0)],
+        couplings=[(0, 1, BoxOnlySeparableCoupling())],
+        constraints={},
+        solver=SolverConfig.admm_solver(steps=1, rho=1.0, step_size=0.1, gate_prox=False),
+        noise_mode="none",
+    )
+
+    result = coordinator.relax_etas([1.0, 1.0])
+
+    assert result == pytest.approx([0.9, 0.9], abs=1e-10)
+    assert coordinator.energy(result) < coordinator.energy([1.0, 1.0])
 
 
 def test_admm_residuals_contract_on_convex_reference() -> None:

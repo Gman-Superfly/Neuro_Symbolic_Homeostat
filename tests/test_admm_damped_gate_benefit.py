@@ -65,7 +65,7 @@ def test_admm_damped_gate_benefit_parity_with_gradient() -> None:
         couplings=couplings,
         constraints=constraints,
         use_analytic=True,
-        line_search=False,
+        line_search=True,
         step_size=0.05,
     )
     etas0_grad = coord_grad.compute_etas(inputs)

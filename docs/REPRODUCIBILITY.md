@@ -29,8 +29,8 @@ This command checks that the longer recorded experiment artifacts already exist.
 
 ## Recorded artifacts
 
-- `logs/pson_noise_ablation.csv`: 630 problem-family and noise-mode trials, including the 32 individual curvature-cost draws for each trial.
-- `logs/pson_noise_ablation_summary.csv`: paired hierarchical bootstrap summaries over seeds and draw indices.
+- `logs/pson_noise_ablation.csv`: 630 problem-family and noise-mode trials, including 32 paired requested-vector and realized box-feasible cost draws, box-scale statistics, and separately labeled diagonal proxies for each trial.
+- `logs/pson_noise_ablation_summary.csv`: paired hierarchical bootstrap summaries over seeds and draw indices, using the exact initial-state box-feasible full-Hessian metric for the current recorded comparisons.
 - `logs/pson_escape_trials.csv`: 800 controlled nonconvex escape trials.
 - `logs/pson_escape_summary.csv`: paired escape-rate differences and intervals.
 - `logs/pson_analytic_reference.csv`: closed-form and Monte Carlo noise-cost comparison.

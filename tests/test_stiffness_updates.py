@@ -139,7 +139,7 @@ def test_stiffness_vs_preconditioning_equivalence_module_only() -> None:
     assert math.isclose(out_a[0], out_b[0], rel_tol=0, abs_tol=1e-12)
 
 
-def test_stiffness_updates_match_jacobi_trajectory_for_quadratic_system() -> None:
+def test_stiffness_updates_match_weighted_jacobi_trajectory_for_quadratic_system() -> None:
     c0 = 2.0
     c1 = 3.0
     target0 = 0.7

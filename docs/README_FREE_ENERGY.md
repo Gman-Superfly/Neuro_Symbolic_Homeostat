@@ -1,7 +1,7 @@
 # Free-Energy Stability Guard (F = U - TS)
 
 Status: Optional Feature (Phase 2)
-Scope: Acceptance criteria based on thermodynamic free energy.
+Scope: Optional acceptance proxy based on (U-TS).
 
 ---
 
@@ -23,9 +23,9 @@ Where:
 
 ## 2. Why Use It?
 
-- **Allow Entropic Exploration**: At high \(T\), the system tolerates small increases in \(U\) if they lead to significantly higher entropy \(S\) (exploration of wider basins).
-- **Avoid Premature Collapse**: Discourages the system from collapsing to low-entropy corner solutions (\(\eta \approx 0\) or \(1\)) too early if the energy gain isn't sufficient.
-- **Thermodynamic Consistency**: Aligns the optimization process with true physical relaxation at finite temperature.
+- **Entropy-aware acceptance**: At positive \(T\), the guard can accept an increase in \(U\) when the configured Bernoulli entropy increase lowers \(U-TS\).
+- **Boundary preference**: The entropy term makes midpoint states cheaper than corner states in the acceptance proxy, subject to the competing internal-energy terms.
+- **Mechanism boundary**: The proposal direction still comes from the configured internal-energy gradient and noise path. The implementation does not differentiate \(U-TS\), simulate physical finite-temperature dynamics, or establish thermodynamic consistency.
 
 ---
 
@@ -68,12 +68,12 @@ When enabled, `relax_etas` will:
 
 - **Location**: `core/coordinator.py` (`_compute_entropy`, `_compute_free_energy`).
 - **Observability**: `EnergyBudgetTracker(log_free_energy_decomposition=True)` logs `U_internal_energy`, `S_entropy`, and `F_free_energy`. `RelaxationTracker` records the accepted total-energy trace.
-- **Interaction**: Replaces the standard `assert_monotonic_energy` check.
+- **Interaction**: Replaces the standard internal-energy acceptance check. The separate deterministic monotonicity assertion is bypassed on this branch.
 
 ---
 
 ## 6. Tuning Guidance
 
-- **T = 0**: Equivalent to standard energy minimization (greedy).
-- **Small T (0.01 - 0.1)**: Slight regularization against boundary collapse; cleaner gradients near 0/1.
-- **Large T (1.0+)**: Strong preference for uncertainty (\(\eta \approx 0.5\)); system will only commit to 0 or 1 if constraints (\(U\)) are sufficiently strong. Useful for annealing.
+- **T = 0**: The acceptance proxy reduces to internal energy \(U\).
+- **Small positive T**: Entropy receives a small weight in the acceptance decision. This does not change the proposal gradient.
+- **Larger T**: The acceptance proxy increasingly favors states near \(\eta=0.5\). The useful scale depends on the magnitude of \(U\), so it requires an explicit sweep rather than a universal threshold.

@@ -1,16 +1,16 @@
 {
   "artifacts": [
     {
-      "bytes": 585901,
+      "bytes": 2467667,
       "data_rows": 630,
       "path": "logs/pson_noise_ablation.csv",
-      "sha256": "1eef0f5bc10c095b90c1318dde314157a4f9869c51408d8452e6bd08b56b8e10"
+      "sha256": "8adc55ea7c78e784989af4e01607521e8e13f9644a6cbbb1e9827029f103d6f2"
     },
     {
-      "bytes": 5294,
+      "bytes": 6271,
       "data_rows": 14,
       "path": "logs/pson_noise_ablation_summary.csv",
-      "sha256": "7ed6395e40fbd24474a7b5eab6025d034e01b7d5f02b0ee4da5fd7adda37a8d2"
+      "sha256": "35409fb974416c7c72e1eb941f17cd80f26caa29f449f2e5bceff86a0f1bcd39"
     },
     {
       "bytes": 47545,
@@ -48,9 +48,9 @@
       "sha256": "c1525bba9c4381cf8915de5b928a5084f32fe5166fea67f40bf5ad1c54c652d4"
     },
     {
-      "bytes": 64899,
+      "bytes": 65708,
       "path": "docs/figures/pson_cost_reduction.png",
-      "sha256": "de1b8b4b905499d62e982ddd1b82a4e32754fb4ad99d4081ebbf3b49dbdbf68e"
+      "sha256": "6934a5ddfb7dff81f52b633bf87e1ef98f3125d2f3c3f07f807011db547d87bb"
     },
     {
       "bytes": 37912,
@@ -77,7 +77,7 @@
     "archival_release_and_doi",
     "independent_external_reproduction"
   ],
-  "generated_at_utc": "2026-07-14T21:22:31.821725+00:00",
+  "generated_at_utc": "2026-07-15T02:28:34.532526+00:00",
   "protocol": {
     "escape_steps": 40,
     "escape_trials": 200,
@@ -113,7 +113,7 @@
   },
   "schema_version": 1,
   "source": {
-    "git_commit": "fec4fe2d5d2e84e7524d54706d1a2764b7d1ff83",
+    "git_commit": "0a6db8857522e01cfc99f4e009525e33ab3201cf",
     "worktree_dirty": true
   }
 }

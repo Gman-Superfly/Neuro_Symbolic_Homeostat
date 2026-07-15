@@ -18,6 +18,16 @@ def test_euclidean_projection_orthogonality():
         assert abs(dot_val) <= 1e-9
 
 
+def test_projection_threshold_is_applied_to_gradient_norm_not_squared_norm():
+    gradient = np.array([1e-6, 0.0], dtype=float)
+    noise = np.array([1.0, 1.0], dtype=float)
+
+    projected = project_noise_orthogonal(noise, gradient, eps=1e-8)
+
+    assert np.allclose(projected, (0.0, 1.0), rtol=0.0, atol=1e-12)
+    assert abs(float(np.dot(projected, gradient))) <= 1e-18
+
+
 def test_metric_projection_orthogonality():
     rng = np.random.default_rng(7)
     dimension = 8

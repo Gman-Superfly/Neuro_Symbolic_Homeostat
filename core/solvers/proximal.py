@@ -12,6 +12,7 @@ from ..couplings import (
     QuadraticCoupling,
 )
 from ..interfaces import OrderParameter, SupportsLocalEnergyGrad
+from ..finite_difference import box_derivative
 from ..prox_utils import prox_asym_hinge_pair, prox_linear_gate, prox_quadratic_pair
 from ..solver_config import ProximalSolverConfig
 
@@ -21,9 +22,11 @@ def _local_step(coordinator: Any, index: int, eta: float, tau: float, weights: D
     if isinstance(module, SupportsLocalEnergyGrad):
         gradient = float(module.d_local_energy_d_eta(eta, coordinator.constraints))
     else:
-        base = float(module.local_energy(eta, coordinator.constraints))
-        bumped = float(module.local_energy(min(1.0, eta + coordinator.grad_eps), coordinator.constraints))
-        gradient = (bumped - base) / coordinator.grad_eps
+        gradient = box_derivative(
+            lambda value: float(module.local_energy(value, coordinator.constraints)),
+            eta,
+            coordinator.grad_eps,
+        )
     weight = float(weights.get(f"local:{module.__class__.__name__}", 1.0))
     return float(max(0.0, min(1.0, eta - tau * weight * gradient)))
 

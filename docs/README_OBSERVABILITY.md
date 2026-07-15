@@ -1,52 +1,42 @@
-# Observability: trackers and logging
+# Observability: trackers and diagnostics
 
-Status: available in this repository
-Scope: How to attach telemetry trackers to the EnergyCoordinator to monitor relaxation dynamics, stability, and budgets.
+Status: implemented.
 
----
+Scope: trajectory logging, stability telemetry, update-geometry inspection, and adapter budgets.
 
-## 1. RelaxationTracker
+## RelaxationTracker
 
-**Purpose**: Logs the per‑step trajectory of energy and order parameters (\(\eta\)).
-
-### Usage
+`RelaxationTracker` records the accepted trajectory of energy and order parameters.
 
 ```python
-from core.coordinator import EnergyCoordinator
 from cf_logging.observability import RelaxationTracker
 
-# 1. Create coordinator
-coord = EnergyCoordinator(...)
-
-# 2. Create and attach tracker
 tracker = RelaxationTracker(
-    name="my_experiment_trace",  # Log filename/tag
-    run_id="run_001",            # Identifier for this run
-    log_per_eta=True             # Optional: log every eta_i value per step
+    name="my_experiment_trace",
+    run_id="run_001",
+    log_per_eta=True,
 )
 tracker.attach(coord)
 
-# 3. Run relaxation
 coord.relax_etas(etas0, steps=50)
-
-# 4. Flush logs (writes to CSV/output)
 tracker.flush()
 ```
 
-### Output columns
-- `step`, `energy`, `delta_energy`
-- `min_eta`, `max_eta`, `mean_eta`
-- `eta:{i}` (if `log_per_eta=True`)
-- `compute_cost` (seconds per step)
-- `redemption_gain` (energy drop per second)
+The output includes:
 
----
+- `step`, `energy`, and `delta_energy`.
+- `min_eta`, `max_eta`, and `mean_eta`.
+- `eta:<i>` when `log_per_eta=True`.
+- `compute_cost` in seconds per step.
+- `redemption_gain`, the recorded energy drop per second.
 
-## 2. EnergyBudgetTracker
+Callbacks fire only after a proposal is accepted. A rejected proposal restores the prior state and is absent from the accepted trajectory. Use `last_relaxation_metrics()` when attempted and rejected counts are also required.
 
-**Purpose**: Detailed breakdown of energy terms, gradient norms, stability margins, and entropy.
+Before any solver dispatch, the coordinator snapshots top-level constraints in a read-only mapping. Gate-benefit deltas are converted to finite floats and remain fixed for the complete solver call. The original caller mapping is restored afterward. Energy, gradient, curvature, and acceptance telemetry therefore refer to one frozen external-input snapshot; adapter-owned term weights remain explicitly versioned between accepted steps.
 
-### Usage
+## EnergyBudgetTracker
+
+`EnergyBudgetTracker` records energy decomposition, gradient summaries, stability fields, and adaptive-weight budgets.
 
 ```python
 from cf_logging.observability import EnergyBudgetTracker
@@ -55,36 +45,42 @@ tracker = EnergyBudgetTracker(
     name="budget_log",
     run_id="run_001",
     warn_on_margin_shrink=True,
-    log_free_energy_decomposition=True  # Log U, S, F (F=U-TS)
+    log_free_energy_decomposition=True,
 )
 tracker.attach(coord)
 
-# Run...
 coord.relax_etas(etas0, steps=50)
 tracker.flush()
 ```
 
-### Output columns
-- **Terms**: `energy:local:MyModule`, `energy:coup:MyCoupling`, `grad_norm:local:...`
-- **Stability**: `contraction_margin`, `margin:global`, `margin:row:{i}` (if Small-Gain active)
-- **Thermodynamics**: `U_internal_energy`, `S_entropy`, `F_free_energy`, `T_temperature`
-- **Precision**: `precision:min`, `precision:mean`, `precision:max`
-- **Events**: `monotonicity_violation`, `monotonicity_violation_count`, and `acceptance_reason`
+The output can include:
 
----
+- Terms: `energy:local:<family>`, `energy:coup:<family>`, and term gradient norms.
+- Stability: `step_cap_slack`, `step_cap_slack_warn`, `last_backtracks`, `total_backtracks`, and `acceptance_reason`.
+- Deprecated compatibility: `contraction_margin` aliases `step_cap_slack`, and `margin_warn` aliases `step_cap_slack_warn`.
+- Small-Gain: `margin:global`, `margin:row:<i>`, `cost:<family>`, `alloc:<family>`, and `spent:global`.
+- Thermodynamics: `U_internal_energy`, `S_entropy`, `F_free_energy`, and `T_temperature` when free-energy decomposition is enabled.
+- Precision: `precision:min`, `precision:mean`, and `precision:max`.
+- Events: monotonicity and acceptance provenance fields supplied by the coordinator.
 
-## 3. Best practices
+The preferred stability quantity is
 
-1.  **Attach once**: Attach trackers immediately after creating the coordinator.
-2.  **Flush often**: Call `flush()` after each major relaxation loop or experiment block to ensure data is written.
-3.  **Use run IDs**: Use unique `run_id`s to distinguish experiments in the aggregated log files.
-4.  **Performance**: `log_per_eta` and detailed budget logging have overhead; disable for massive high-speed loops, enable for debugging/tuning.
+\[
+\operatorname{step\_cap\_slack}
+=\frac{2}{L_{\mathrm{update}}}-\alpha_{\mathrm{used}}.
+\]
 
----
+It measures distance from the uncushioned \(2/L_{\mathrm{update}}\) boundary. It is not the spectral contraction factor
 
-## 4. Public state diagnostics
+\[
+q=\max_{\lambda}|1-\alpha\lambda|.
+\]
 
-Experiments that need a point-in-time diagnostic should use the public snapshot API rather than coordinator cache methods:
+For a preconditioned quadratic, the eigenvalues in \(q\) belong to \(P^{-1/2}HP^{-1/2}\). For an ordinary quadratic, they belong to \(H\).
+
+## Raw and update-geometry curvature
+
+Use the public snapshot API when an experiment needs the state and both curvature views at one point:
 
 ```python
 snapshot = coord.inspect_state(etas)
@@ -92,9 +88,57 @@ snapshot = coord.inspect_state(etas)
 snapshot.energy
 snapshot.gradient
 snapshot.precision_diagonal
+snapshot.preconditioner_diagonal
 snapshot.lipschitz_bound
+snapshot.update_lipschitz_bound
 snapshot.term_weights
 snapshot.term_gradient_norms
 ```
 
-`coord.build_noise_vector(raw_noise, snapshot.gradient)` exposes the configured noise transformation for controlled ablations. Both APIs preserve the coordinator's internal cache ownership.
+The fields have distinct meanings:
+
+- `precision_diagonal` is the nonnegative cached curvature before the active epsilon floor.
+- `preconditioner_diagonal` is the exact positive diagonal \(P\) used to divide the gradient.
+- `lipschitz_bound` is the raw, unpreconditioned Hessian row-sum bound \(L_H\).
+- `update_lipschitz_bound` is the normalized \(L_P\) bound when stiffness or precision preconditioning is active. It equals the raw bound for an ordinary update.
+
+For a preconditioned SPD quadratic,
+
+\[
+L_P\ge\lambda_{\max}(P^{-1/2}HP^{-1/2})
+\]
+
+is the premise used by the step guard. Logging only \(L_H\) is insufficient to diagnose the executed \(P^{-1}H\) dynamics.
+
+Detailed `_last_lipschitz_details` data, when enabled, also identifies the active geometry, the preconditioner used for normalized rows, row sums, row margins, family costs, and edge costs. This object is coordinator instrumentation. Use the snapshot fields for stable point-in-time diagnostics.
+
+## Line-search provenance
+
+Projected Armijo evaluates the objective gradient \(g\) against the realized box-constrained displacement
+
+\[
+s=\Pi_{[0,1]^n}(x-\alpha d)-x.
+\]
+
+It accepts when \(g^\top s\le0\) and
+
+\[
+F(x+s)\le F(x)+c\,g^\top s.
+\]
+
+`last_relaxation_metrics()` exposes `last_acceptance_reason` and the per-attempt `acceptance_reasons` list. `armijo_accepted` records success. `armijo_failed_no_step` records exhausted backtracking; the returned state is unchanged. Callback trackers receive accepted-state emissions, while rejected-attempt provenance remains available through these run metrics.
+
+## Noise diagnostics
+
+`coord.build_noise_vector(raw_noise, snapshot.gradient)` exposes the configured noise transformation for controlled ablations. Precision-orthogonal modes re-project after inverse-precision weighting. The relaxation path applies the largest uniform scalar that keeps the full vector inside the unit box, which preserves first-order tangency above the numerical gradient threshold.
+
+At gradient norm below \(10^{-8}\), the projection helper returns the noise unchanged because no reliable tangent normal exists. Diagnostics should label this branch as stationary-point exploration rather than a null-space certificate.
+
+## Operating guidance
+
+- Attach trackers immediately after creating the coordinator.
+- Flush after each experiment block.
+- Use unique `run_id` values.
+- Disable per-coordinate logging for large throughput runs when the additional data is unnecessary.
+- Compare `lipschitz_bound` with `update_lipschitz_bound` before diagnosing a preconditioned step.
+- Treat deprecated contraction-margin fields as step-cap slack aliases in existing logs.

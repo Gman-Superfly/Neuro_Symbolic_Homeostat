@@ -1,7 +1,7 @@
 """Adaptive controller for orthogonal noise magnitude based on optimization signals.
 
 Implements the logic:
-    s_t = clamp(w1*(1-rate) + w2*backtrack + w3*(1-cos_theta) + w4*excess_L, 0, 1)
+    s_t = clamp(w_rate*stall + w_backtrack*backtrack + w_rotation*rotation, 0, 1)
     noise_magnitude = s_t * noise_max
 """
 
@@ -21,9 +21,8 @@ class OrthogonalNoiseController:
     - Descent rate: 1 - (F_new / F_old) (if < threshold, boost noise)
     - Backtracks: if line search backtracks, boost noise (stuck/bad direction)
     - Gradient rotation: 1 - cos(g_t, g_{t-1}) (high rotation = curved valley => boost noise)
-    - Contraction margin: if small, boost noise (near stability limit)
-    
-    Outputs a scaler in [0, 1] to multiply with base noise_magnitude.
+
+    Outputs a scalar in [0, 1] to multiply with base noise_magnitude.
     """
     
     base_magnitude: float = 0.0
@@ -47,12 +46,12 @@ class OrthogonalNoiseController:
         backtracks: int, 
         iter_idx: int
     ) -> float:
-        """Compute noise magnitude for the *next* step based on current signals.
+        """Compute magnitude from the current gradient and prior proposal outcome.
         
         Args:
             grad: Current gradient vector.
             energy_drop_ratio: (F_old - F_new) / F_old (or similar relative drop).
-            backtracks: Number of backtracks in the last step.
+            backtracks: Number of backtracks in the completed prior proposal.
             iter_idx: Current iteration index (for annealing).
             
         Returns:

@@ -57,7 +57,7 @@ These controllers are metric‑agnostic; the geometry enters at the projection l
 In the “Complexity from Constraints” main repo, a metric‑aware controller can be valuable when:
 
 - The metric \(M\) is principled (e.g., Fisher information, Gauss‑Newton, or a validated application‑specific metric) and changes meaningfully across steps.
-- You want the noise magnitude policy itself to depend on metric quantities such as \(g^\top M^{-1}g\), contraction margins computed under \(M\), or anisotropic exploration budgets derived from \(M\).
+- You want the noise magnitude policy itself to depend on metric quantities such as \(g^\top M^{-1}g\), a separately derived update-geometry certificate, or anisotropic exploration budgets derived from \(M\).
 - You are working in a Riemannian or natural‑gradient setting (Riemannian Langevin), where both direction (projection) and scale (controller) should be consistent with the manifold geometry.
 
 In those cases, a dedicated `MetricAwareNoiseController` can encode M‑conditioned signals and budgets explicitly (and still call the same projection function for direction).
@@ -69,7 +69,7 @@ In those cases, a dedicated `MetricAwareNoiseController` can encode M‑conditio
 - Keep projection independent: continue using `project_noise_metric_orthogonal` for direction.
 - Have the metric‑aware controller decide only the magnitude schedule (and optional per‑coordinate redistribution), using signals such as:
   - \(g^\top M^{-1}g\) (squared norm of the metric gradient)
-  - Contraction margins computed under M‑aware bounds
+  - Step-cap slack from a bound derived for the update geometry actually used
   - Rotation/curvature proxies compatible with \(M\)
 - Preserve stability: keep the curvature-based step cap and accepted-step guard unchanged.
 - Preserve first-order tangency: after any redistribution, re-project so \(g^\top\delta=0\) under the selected geometry.

@@ -92,8 +92,9 @@ class SupportsCouplingCurvature(Protocol):
 class SupportsPrecision(Protocol):
     """Optional interface for modules exposing local stiffness/curvature.
 
-    The coordinator uses this value for diagonal preconditioning, curvature
-    bounds, and precision-scaled exploration.
+    The coordinator uses this value to form the diagonal update
+    preconditioner and precision-scaled exploration. The stability bound is
+    assembled independently and then normalized by that exact diagonal.
     """
 
     def curvature(self, eta: OrderParameter) -> float:

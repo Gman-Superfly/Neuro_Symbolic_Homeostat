@@ -121,7 +121,6 @@ def run_config(
         coord_kwargs.setdefault("use_vectorized_quadratic", True)
         coord_kwargs.setdefault("use_vectorized_hinges", True)
         coord_kwargs.setdefault("use_vectorized_gate_benefits", True)
-        coord_kwargs.setdefault("neighbor_gradients_only", False)
     else:
         mods, coups, constraints, inputs = make_modules_and_couplings()
     # Materialize adapter if requested via a sentinel in coord_kwargs
@@ -146,9 +145,9 @@ def run_config(
         # ensure coordinator exposes details needed by the adapter
         coord_kwargs = dict(coord_kwargs)
         coord_kwargs["expose_lipschitz_details"] = True
-        # keep stability guard on for a meaningful contraction margin
+        # Keep the guard on so the step-cap slack is meaningful.
         coord_kwargs.setdefault("stability_guard", True)
-        coord_kwargs.setdefault("log_contraction_margin", True)
+        coord_kwargs.setdefault("log_step_cap_slack", True)
     coord = EnergyCoordinator(mods, coups, constraints, weight_adapter=adapter, **coord_kwargs)
     tracker = None
     if log_budget:
@@ -237,19 +236,16 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "use_analytic": False,
         "use_vectorized_quadratic": False,
         "use_vectorized_hinges": False,
-        "neighbor_gradients_only": False,
     },
     "analytic": {
         "use_analytic": True,
         "use_vectorized_quadratic": False,
         "use_vectorized_hinges": False,
-        "neighbor_gradients_only": False,
     },
     "vect": {
         "use_analytic": True,
         "use_vectorized_quadratic": True,
         "use_vectorized_hinges": True,
-        "neighbor_gradients_only": True,
         "line_search": True,
         "normalize_grads": True,
     },
@@ -283,10 +279,9 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         # helpful toggles
         "use_vectorized_quadratic": True,
         "use_vectorized_hinges": True,
-        "neighbor_gradients_only": True,
         # stability and telemetry
         "stability_guard": True,
-        "log_contraction_margin": True,
+        "log_step_cap_slack": True,
         "expose_lipschitz_details": True,
     },
     "admm": {
@@ -305,9 +300,9 @@ def main() -> None:
     parser.add_argument("--dense_size", type=int, default=16)
     parser.add_argument("--log_budget", action="store_true")
     parser.add_argument("--budget_name", type=str, default="benchmark_delta_f90_budget")
-    # Budget tracker margin warning toggles
-    parser.add_argument("--warn_on_margin_shrink", action="store_true", help="Emit margin_warn=1 when contraction_margin < threshold")
-    parser.add_argument("--margin_warn_threshold", type=float, default=None, help="Threshold for contraction margin warnings (default 1e-4)")
+    # Budget tracker step-cap-slack warning toggles.
+    parser.add_argument("--warn_on_margin_shrink", action="store_true", help="Emit step_cap_slack_warn=1 when step_cap_slack is below the threshold")
+    parser.add_argument("--margin_warn_threshold", type=float, default=None, help="Threshold for step-cap-slack warnings (default 1e-4)")
     # SmallGain sweep knobs (optional)
     parser.add_argument("--sg_rho", type=float, default=None, help="SmallGain budget fraction, e.g. 0.5/0.7/0.9")
     parser.add_argument("--sg_dw", type=float, default=None, help="SmallGain maximum per-step weight change, e.g. 0.05/0.10/0.20")

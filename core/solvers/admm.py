@@ -14,6 +14,7 @@ from ..couplings import (
     QuadraticCoupling,
 )
 from ..interfaces import OrderParameter, SupportsCouplingGrads, SupportsLocalEnergyGrad
+from ..finite_difference import box_derivative
 from ..prox_utils import prox_linear_gate
 from ..solver_config import ADMMSolverConfig
 
@@ -71,9 +72,13 @@ def solve_admm(
             if isinstance(module, SupportsLocalEnergyGrad):
                 gradients[index] += weight * float(module.d_local_energy_d_eta(eta, coordinator.constraints))
             else:
-                base = float(module.local_energy(eta, coordinator.constraints))
-                bumped = float(module.local_energy(min(1.0, eta + coordinator.grad_eps), coordinator.constraints))
-                gradients[index] += weight * (bumped - base) / coordinator.grad_eps
+                gradients[index] += weight * box_derivative(
+                    lambda value, local_module=module: float(
+                        local_module.local_energy(value, coordinator.constraints)
+                    ),
+                    eta,
+                    coordinator.grad_eps,
+                )
 
         for index, (i, j, _) in enumerate(quadratic_edges):
             residual = s[index] - (etas[i] - etas[j]) + u[index]
@@ -93,15 +98,20 @@ def solve_admm(
             if isinstance(coupling, SupportsCouplingGrads):
                 grad_i, grad_j = coupling.d_coupling_energy_d_etas(etas[i], etas[j], coordinator.constraints)
             else:
-                base = float(coupling.coupling_energy(etas[i], etas[j], coordinator.constraints))
-                bumped_i = float(
-                    coupling.coupling_energy(min(1.0, etas[i] + coordinator.grad_eps), etas[j], coordinator.constraints)
+                grad_i = box_derivative(
+                    lambda value, edge=coupling, other=etas[j]: float(
+                        edge.coupling_energy(value, other, coordinator.constraints)
+                    ),
+                    etas[i],
+                    coordinator.grad_eps,
                 )
-                bumped_j = float(
-                    coupling.coupling_energy(etas[i], min(1.0, etas[j] + coordinator.grad_eps), coordinator.constraints)
+                grad_j = box_derivative(
+                    lambda value, edge=coupling, other=etas[i]: float(
+                        edge.coupling_energy(other, value, coordinator.constraints)
+                    ),
+                    etas[j],
+                    coordinator.grad_eps,
                 )
-                grad_i = (bumped_i - base) / coordinator.grad_eps
-                grad_j = (bumped_j - base) / coordinator.grad_eps
             gradients[i] += weight * float(grad_i)
             gradients[j] += weight * float(grad_j)
 

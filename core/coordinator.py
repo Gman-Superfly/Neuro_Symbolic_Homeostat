@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import math
 import warnings
+from types import MappingProxyType
 import numpy as np
 
 from .interfaces import (
@@ -15,6 +16,7 @@ from .interfaces import (
     OrderParameter,
     SupportsLocalEnergyGrad,
     SupportsCouplingGrads,
+    SupportsCouplingCurvature,
     WeightAdapter,
 )
 from .couplings import (
@@ -25,11 +27,16 @@ from .couplings import (
     DampedGateBenefitCoupling,
 )
 from .energy import total_energy
+from .finite_difference import box_derivative
 from .diagnostics import CoordinatorSnapshot
 from .noise_controller import OrthogonalNoiseController, PrecisionNoiseController
-from .coordinator_noise import build_noise_vector, resolved_noise_mode
-from .coordinator_precision import get_precision_diagonal, update_precision_cache
-from .coordinator_stability import estimate_lipschitz_bound
+from .coordinator_noise import apply_box_feasible_noise, build_noise_vector, resolved_noise_mode
+from .coordinator_precision import get_precision_diagonal, get_update_preconditioner, update_precision_cache
+from .coordinator_stability import (
+    estimate_lipschitz_bound,
+    estimate_preconditioned_lipschitz_bound,
+    validate_curvature_bound_triplet,
+)
 from .config import CoordinatorConfig
 from .solver_config import ADMMSolverConfig, ProximalSolverConfig, SolverConfig, SolverMode
 from .solvers import solve_admm, solve_proximal
@@ -92,12 +99,14 @@ class EnergyCoordinator:
     use_vectorized_quadratic: bool = True
     use_vectorized_hinges: bool = True
     use_vectorized_gate_benefits: bool = True
+    # Deprecated compatibility flag. Full-objective finite differences must
+    # evaluate every coordinate because isolated nodes still own local energy.
     neighbor_gradients_only: bool = True
     enforce_invariants: bool = True
     solver: SolverConfig = field(default_factory=SolverConfig)
-    # Stiffness-based updates (Jacobi/Newton-like per-coordinate step)
-    # When enabled, the coordinator uses Δη_i = - (∂F/∂η_i) / (diag_curvature_i + ε) (optionally scaled by stability cap)
-    # Diagonal curvature aggregates local module curvature (if provided) and coupling curvature (quadratic + active hinges).
+    # Stiffness-based weighted-Jacobi updates.
+    # The update is Δη_i = -α (∂F/∂η_i) / P_i, where P is the same
+    # positive diagonal used to normalize the stability bound.
     use_stiffness_updates: bool = False
     stiffness_epsilon: float = 1e-8
     # Free-energy guard: F = U - T*S acceptance (Phase 2)
@@ -120,6 +129,8 @@ class EnergyCoordinator:
     # Curvature-based stability guard (optional)
     stability_guard: bool = True
     stability_cap_fraction: float = 0.9  # cap step to this fraction of 2/L estimate
+    log_step_cap_slack: bool = False
+    # Deprecated name retained for configuration compatibility.
     log_contraction_margin: bool = False
     # (stability coupling auto-cap removed)
     warn_on_margin_shrink: bool = False  # emit Python warnings when margin drops below threshold
@@ -162,6 +173,7 @@ class EnergyCoordinator:
     _total_backtracks: int = field(default=0, init=False, repr=False)
     _last_step_backtracks: int = field(default=0, init=False, repr=False)
     _last_acceptance_reason: Optional[str] = field(default=None, init=False, repr=False)
+    _last_step_cap_slack: Optional[float] = field(default=None, init=False, repr=False)
     _last_contraction_margin: Optional[float] = field(default=None, init=False, repr=False)
     # (homotopy/coupling auto-cap internals removed)
     _last_lipschitz_details: Optional[dict] = field(default=None, init=False, repr=False)
@@ -170,7 +182,9 @@ class EnergyCoordinator:
     _accepted_energy_history: List[float] = field(default_factory=list, init=False, repr=False)
     _guard_energy_transitions: List[Tuple[int, float, float]] = field(default_factory=list, init=False, repr=False)
     _attempt_energy_history: List[float] = field(default_factory=list, init=False, repr=False)
+    _acceptance_reason_history: List[str] = field(default_factory=list, init=False, repr=False)
     _objective_version: int = field(default=0, init=False, repr=False)
+    _step_cap_slack_history: List[float] = field(default_factory=list, init=False, repr=False)
     _contraction_margin_history: List[float] = field(default_factory=list, init=False, repr=False)
     _rejected_steps: int = field(default=0, init=False, repr=False)
     _early_stop_stable_count: int = field(default=0, init=False, repr=False)
@@ -258,15 +272,28 @@ class EnergyCoordinator:
         values = [float(value) for value in etas]
         gradient = tuple(float(value) for value in self._grads(values))
         self._update_precision_cache(values)
+        precision_diagonal = tuple(float(value) for value in self.get_precision_diagonal())
+        raw_lipschitz_bound = float(self._estimate_lipschitz_bound(values))
+        if self.use_stiffness_updates or self.use_precision_preconditioning:
+            preconditioner = np.asarray(get_update_preconditioner(self), dtype=float)
+            update_lipschitz_bound = float(
+                self._estimate_preconditioned_lipschitz_bound(values, preconditioner)
+            )
+            preconditioner_diagonal = tuple(float(value) for value in preconditioner)
+        else:
+            update_lipschitz_bound = raw_lipschitz_bound
+            preconditioner_diagonal = tuple(1.0 for _ in values)
         return CoordinatorSnapshot(
             etas=tuple(values),
             energy=float(self._energy_value(values)),
             gradient=gradient,
-            precision_diagonal=tuple(float(value) for value in self.get_precision_diagonal()),
-            lipschitz_bound=float(self._estimate_lipschitz_bound(values)),
+            precision_diagonal=precision_diagonal,
+            lipschitz_bound=raw_lipschitz_bound,
             term_weights=dict(self._combined_term_weights()),
             term_gradient_norms=dict(self._term_grad_norms(values)),
             objective_version=int(self._objective_version),
+            update_lipschitz_bound=update_lipschitz_bound,
+            preconditioner_diagonal=preconditioner_diagonal,
         )
 
     def _energy_value(self, etas: List[OrderParameter]) -> float:
@@ -278,7 +305,47 @@ class EnergyCoordinator:
         return total_energy(etas, self.modules, self.couplings, merged_constraints)
 
     def relax_etas(self, etas0: List[OrderParameter], steps: int = 50) -> List[OrderParameter]:
-        """Finite-difference gradient steps on F_total w.r.t. etas."""
+        """Run one relaxation against a fixed snapshot of external constraints.
+
+        Top-level constraint values are sampled at the run boundary. In
+        particular, gate-benefit deltas cannot change between an energy
+        evaluation and its gradient or acceptance check. Adapter-owned term
+        weights remain an explicit, versioned source of between-step changes.
+        """
+        return self._run_with_constraint_snapshot(
+            lambda: self._relax_etas_with_snapshot(etas0, steps)
+        )
+
+    def _run_with_constraint_snapshot(
+        self,
+        operation: Callable[[], List[OrderParameter]],
+    ) -> List[OrderParameter]:
+        """Run an optimization entry point with fixed top-level constraints."""
+        original_constraints = self.constraints
+        snapshot: dict[str, Any] = dict(original_constraints)
+        term_weights = snapshot.get("term_weights")
+        if isinstance(term_weights, Mapping):
+            snapshot["term_weights"] = MappingProxyType(dict(term_weights))
+        for _, _, coupling in self.couplings:
+            if isinstance(coupling, (GateBenefitCoupling, DampedGateBenefitCoupling)):
+                delta = float(snapshot.get(coupling.delta_key, 0.0))
+                if not math.isfinite(delta):
+                    raise ValueError(
+                        f"gate-benefit constraint {coupling.delta_key!r} must be finite"
+                    )
+                snapshot[coupling.delta_key] = delta
+        self.constraints = MappingProxyType(snapshot)
+        try:
+            return operation()
+        finally:
+            self.constraints = original_constraints
+
+    def _relax_etas_with_snapshot(
+        self,
+        etas0: List[OrderParameter],
+        steps: int,
+    ) -> List[OrderParameter]:
+        """Implement ``relax_etas`` after the run constraint snapshot is installed."""
         if self.solver.mode == SolverMode.PROXIMAL:
             return solve_proximal(self, etas0, self.solver.proximal)
         if self.solver.mode == SolverMode.ADMM:
@@ -294,21 +361,31 @@ class EnergyCoordinator:
                 "metric_precision_orthogonal",
             }
         ) else None
+        # Controller feedback is defined within one relaxation run. The first
+        # proposal has no completed predecessor; later proposals consume the
+        # backtrack count produced by the immediately preceding proposal.
+        controller_backtracks = 0
         if controller is not None:
             controller.base_magnitude = float(self.noise_magnitude)
             controller.decay = float(self.noise_schedule_decay)
             controller.reset()
+        self._last_energy_drop_ratio = 1.0
         energy_value = self._energy_value(etas)
         prev_energy_value: Optional[float] = energy_value
         self._accepted_energy_history = []
         self._guard_energy_transitions = []
         self._attempt_energy_history = []
+        self._acceptance_reason_history = []
         self._objective_version = 0
+        self._last_step_cap_slack = None
+        self._last_contraction_margin = None
+        self._step_cap_slack_history = []
         self._contraction_margin_history = []
         self._rejected_steps = 0
         for iter_idx in range(steps):
             self._last_acceptance_reason = None
             self._last_step_backtracks = 0
+            line_search_failed = False
             # Weight adaptation changes the objective between iterations. Build
             # the guard baseline under the same weights used for this proposal.
             prev_energy_value = self._energy_value(etas)
@@ -317,8 +394,16 @@ class EnergyCoordinator:
             
             # Phase 2: Update precision cache before gradient step
             self._update_precision_cache(etas)
-            
-            grads = self._grads(etas)
+
+            uses_preconditioning = self.use_stiffness_updates or self.use_precision_preconditioning
+            preconditioner = (
+                np.asarray(get_update_preconditioner(self), dtype=float)
+                if uses_preconditioning
+                else None
+            )
+
+            objective_grads = self._grads(etas)
+            grads = list(objective_grads)
             # optional normalization/clipping
             if self.normalize_grads:
                 norm = float(np.linalg.norm(np.asarray(grads, dtype=float)))
@@ -331,9 +416,18 @@ class EnergyCoordinator:
                     grads = [g * scale for g in grads]
             # Stability guard: cap step size if enabled
             step_to_use = self.step_size
-            need_L = self.stability_guard
+            need_L = self.stability_guard and not self.normalize_grads
             if need_L:
-                L_est = self._estimate_lipschitz_bound(etas)
+                L_est = (
+                    self._estimate_preconditioned_lipschitz_bound(etas, preconditioner)
+                    if preconditioner is not None
+                    else self._estimate_lipschitz_bound(etas)
+                )
+                if math.isinf(L_est) and not self.line_search:
+                    raise ValueError(
+                        "the update curvature bound is infinite; enable line_search "
+                        "or disable stability_guard explicitly"
+                    )
             if self.stability_guard and L_est and L_est > 0.0 and math.isfinite(L_est):
                 # Optional: set step directly from Lipschitz estimate (2/L) with safety fraction
                 if self.auto_step_from_lipschitz:
@@ -341,26 +435,34 @@ class EnergyCoordinator:
                 cap = self.stability_cap_fraction * (2.0 / L_est)
                 if cap > 0.0:
                     step_to_use = min(step_to_use, cap)
-                    if self.log_contraction_margin:
+                    if self.log_step_cap_slack or self.log_contraction_margin:
                         margin = (2.0 / L_est) - step_to_use
+                        self._last_step_cap_slack = margin
+                        self._step_cap_slack_history.append(float(margin))
+                        # Backward-compatible aliases. This value is cap slack,
+                        # not a spectral contraction rate.
                         self._last_contraction_margin = margin
                         self._contraction_margin_history.append(float(margin))
                         # Emit warning if margin shrinks below threshold
                         if self.warn_on_margin_shrink and margin < self.margin_warn_threshold:
                             warnings.warn(
-                                f"Contraction margin ({margin:.2e}) below threshold ({self.margin_warn_threshold:.2e}). "
+                                f"Step-cap slack ({margin:.2e}) below threshold ({self.margin_warn_threshold:.2e}). "
                                 f"Consider reducing step_size or coupling weights. "
                                 f"Lipschitz bound L={L_est:.2e}, safe step=2/L={2.0/L_est:.2e}, current step={step_to_use:.2e}",
                                 UserWarning,
                                 stacklevel=2
                             )
-            elif self.stability_guard and self.log_contraction_margin:
+            elif self.stability_guard and (self.log_step_cap_slack or self.log_contraction_margin):
+                self._last_step_cap_slack = None
+                self._step_cap_slack_history.append(float("nan"))
                 self._last_contraction_margin = None
                 self._contraction_margin_history.append(float("nan"))
             
             # Inject orthogonal noise if enabled (structure-preserving exploration)
-            grad_vector = np.array(grads, dtype=float)
-            noise_vector = np.zeros_like(grad_vector)
+            # Tangency and the stationary threshold are defined by the ordinary
+            # objective gradient, not by a normalized or clipped update vector.
+            noise_grad_vector = np.asarray(objective_grads, dtype=float)
+            noise_vector = np.zeros_like(noise_grad_vector)
             current_noise_mag = 0.0
             if noise_mode in {
                 "orthogonal",
@@ -370,9 +472,9 @@ class EnergyCoordinator:
             }:
                 if controller is not None:
                     current_noise_mag = controller.step(
-                        grad_vector,
+                        noise_grad_vector,
                         energy_drop_ratio=getattr(self, "_last_energy_drop_ratio", 1.0),
-                        backtracks=int(self._last_step_backtracks),
+                        backtracks=controller_backtracks,
                         iter_idx=iter_idx,
                     )
                 else:
@@ -382,23 +484,18 @@ class EnergyCoordinator:
             else:
                 current_noise_mag = 0.0
             if current_noise_mag > 1e-9:
-                raw_noise = np.random.normal(0, 1, size=grad_vector.shape)
-                noise_vector = self._build_noise_vector(raw_noise, grad_vector, current_noise_mag)
+                raw_noise = np.random.normal(0, 1, size=noise_grad_vector.shape)
+                noise_vector = self._build_noise_vector(
+                    raw_noise,
+                    noise_grad_vector,
+                    current_noise_mag,
+                )
             
             # step
             if self.line_search:
-                # Line search applies to the gradient direction
-                # Noise is added *after* the descent step decision (Langevin-style) or *to* the direction?
-                # Standard practice: add noise to the update. 
-                # But line search needs a direction. Let's define direction d = -grad + noise
-                # Then line search along d.
                 grads_eff = list(grads)
-                # Precision-aware diagonal preconditioning for line-search direction
-                if self.use_precision_preconditioning:
-                    curv_diag = self.get_precision_diagonal()
-                    eps = float(self.precision_epsilon)
-                    denom = [max(eps, float(c)) for c in curv_diag]
-                    grads_eff = [g / d for g, d in zip(grads_eff, denom)]
+                if preconditioner is not None:
+                    grads_eff = [g / d for g, d in zip(grads_eff, preconditioner)]
 
             # (stability coupling auto-cap removed)
             # Optional: prepare Lipschitz details for allocator/telemetry
@@ -416,42 +513,40 @@ class EnergyCoordinator:
                     else L_est
                 )
                 self._last_lipschitz_details = self._estimate_lipschitz_details(
-                    etas, smoothing_epsilon=max(self.grad_eps * 0.5, 1e-6), target_L=target_L
+                    etas,
+                    smoothing_epsilon=max(self.grad_eps * 0.5, 1e-6),
+                    target_L=target_L,
+                    preconditioner=preconditioner,
                 )
             # step
             if self.line_search:
-                # Standard Armijo along -grad direction
-                # Apply line search on grads_eff (mirror-aware if enabled), then add noise
-                etas = self._step_with_backtracking(etas, grads_eff, step_to_use)
-                if np.any(noise_vector):
-                    # Add noise (orthogonal to gradient, so doesn't fight the descent step to first order)
-                    for i in range(len(etas)):
-                        etas[i] = float(max(0.0, min(1.0, etas[i] + noise_vector[i])))
+                # Projected Armijo along the selected descent direction.
+                etas = self._step_with_backtracking(
+                    etas,
+                    objective_grads,
+                    grads_eff,
+                    step_to_use,
+                )
+                line_search_failed = self._last_acceptance_reason == "armijo_failed_no_step"
+                if not line_search_failed and np.any(noise_vector):
+                    etas = apply_box_feasible_noise(etas, noise_vector).tolist()
             else:
-                # No line search: direct gradient update with noise blended in
+                # Apply the deterministic projected update first.
                 for i in range(len(etas)):
-                        # Update: stiffness-based or gradient step (with optional diagonal preconditioning)
-                        # noise_vector is already scaled by noise_magnitude
-                        if self.use_stiffness_updates:
-                            # Use aggregated diagonal curvature (locals + couplings)
-                            curv_i = 0.0
-                            if self._precision_cache is not None:
-                                curv_i = float(self._precision_cache.get(i, 0.0))  # type: ignore[union-attr]
-                            denom_i = max(float(self.stiffness_epsilon), max(0.0, curv_i))
-                            g_eff = float(grads[i]) / denom_i
-                            update = -step_to_use * g_eff
-                        else:
-                            # Precision-aware diagonal preconditioning if enabled (module-only curvature)
-                            if self.use_precision_preconditioning:
-                                curv_i = float(self._precision_cache.get(i, 0.0)) if self._precision_cache is not None else 0.0  # type: ignore[union-attr]
-                                denom_i = float(self.precision_epsilon) + max(0.0, curv_i)
-                                g_eff = float(grads[i]) / (denom_i if denom_i > 0.0 else 1.0)
-                            else:
-                                g_eff = float(grads[i])
-                            update = -step_to_use * g_eff
-                        if np.any(noise_vector):
-                            update += noise_vector[i]
-                        etas[i] = float(max(0.0, min(1.0, etas[i] + update)))
+                    # Use the same diagonal consumed by the stability bound.
+                    if preconditioner is not None:
+                        g_eff = float(grads[i]) / float(preconditioner[i])
+                    else:
+                        g_eff = float(grads[i])
+                    update = -step_to_use * g_eff
+                    etas[i] = float(max(0.0, min(1.0, etas[i] + update)))
+                if np.any(noise_vector):
+                    etas = apply_box_feasible_noise(etas, noise_vector).tolist()
+
+            # Save the completed proposal's line-search work for the next
+            # controller decision. `_last_step_backtracks` remains the public
+            # metric for the most recently completed proposal.
+            controller_backtracks = int(self._last_step_backtracks)
             
             energy_value = self._energy_value(etas)
             if self.enforce_invariants:
@@ -464,7 +559,7 @@ class EnergyCoordinator:
                 self._last_energy_drop_ratio = 1.0
             # Early stop on non-monotonic energy (guard against oscillations).
             # We reject steps that don't improve our objective to prevent instability.
-            should_reject = False
+            should_reject = line_search_failed
 
             # Option A: Free-energy guard (Phase 2)
             # Accept based on F = U - T*S decrease instead of U alone.
@@ -483,6 +578,7 @@ class EnergyCoordinator:
             # Strictly enforce monotonic decrease in total energy U.
             elif prev_energy_value is not None and energy_value > prev_energy_value + 1e-12:
                 should_reject = True
+                self._last_acceptance_reason = "non_monotonic_rejected"
             
             if should_reject:
                 if not self._last_acceptance_reason:
@@ -491,6 +587,7 @@ class EnergyCoordinator:
                 etas = list(etas_prev)
                 energy_value = float(prev_energy_value) if prev_energy_value is not None else self._energy_value(etas)
                 self._attempt_energy_history.append(float(energy_value))
+                self._acceptance_reason_history.append(str(self._last_acceptance_reason))
                 if self.continue_after_rejection:
                     continue
                 break
@@ -520,6 +617,7 @@ class EnergyCoordinator:
                     self._last_acceptance_reason = "monotone_decrease"
                 else:
                     self._last_acceptance_reason = "initial_step"
+            self._acceptance_reason_history.append(str(self._last_acceptance_reason))
             self._emit_eta(etas)
             self._emit_energy(energy_value)
             self._record_energy_history(energy_value)
@@ -531,6 +629,7 @@ class EnergyCoordinator:
                     self._early_stop_stable_count += 1
                     if self._early_stop_stable_count >= self.early_stop_patience:
                         self._last_acceptance_reason = "early_stop_converged"
+                        self._acceptance_reason_history[-1] = self._last_acceptance_reason
                         break
                 else:
                     self._early_stop_stable_count = 0
@@ -593,7 +692,9 @@ class EnergyCoordinator:
             tau=tau,
             block_mode=self.solver.proximal.block_mode,
         )
-        return solve_proximal(self, etas0, config)
+        return self._run_with_constraint_snapshot(
+            lambda: solve_proximal(self, etas0, config)
+        )
 
     def relax_etas_admm(
         self,
@@ -615,23 +716,25 @@ class EnergyCoordinator:
             gate_prox=self.solver.admm.gate_prox,
             gate_damping=self.solver.admm.gate_damping,
         )
-        return solve_admm(self, etas0, config)
+        return self._run_with_constraint_snapshot(
+            lambda: solve_admm(self, etas0, config)
+        )
+
+    def _box_derivative(self, function: Callable[[float], float], value: float) -> float:
+        return box_derivative(function, value, self.grad_eps)
 
     def _finite_diff_grads(self, etas: List[OrderParameter]) -> List[float]:
-        base = self._energy_value(etas)
+        # Every coordinate owns a local objective, including isolated nodes in
+        # partially coupled graphs.  Coupling adjacency therefore cannot be
+        # used to prune full-objective finite differences safely.
         grads: List[float] = [0.0 for _ in etas]
-        indices: Iterable[int]
-        if self.neighbor_gradients_only:
-            self._ensure_adjacency(len(etas))
-            indices = self._active_indices(etas)
-        else:
-            indices = range(len(etas))
-        for i in indices:
-            bumped = list(etas)
-            bumped[i] += self.grad_eps
-            Fb = self._energy_value(bumped)
-            grad_i = (Fb - base) / self.grad_eps
-            grads[i] = float(grad_i)
+        for i, eta in enumerate(etas):
+            def energy_at(value: float, *, index: int = i) -> float:
+                trial = list(etas)
+                trial[index] = float(value)
+                return float(self._energy_value(trial))
+
+            grads[i] = self._box_derivative(energy_at, float(eta))
         return grads
 
     def _analytic_grads(self, etas: List[OrderParameter]) -> List[float]:
@@ -645,9 +748,10 @@ class EnergyCoordinator:
             if isinstance(m, SupportsLocalEnergyGrad):
                 grad_arr[idx] += w * float(m.d_local_energy_d_eta(float(eta), self.constraints))
             else:
-                base = float(m.local_energy(eta, self.constraints))
-                b = float(m.local_energy(eta + self.grad_eps, self.constraints))
-                grad_arr[idx] += w * ((b - base) / self.grad_eps)
+                grad_arr[idx] += w * self._box_derivative(
+                    lambda value, module=m: float(module.local_energy(value, self.constraints)),
+                    float(eta),
+                )
         if self.use_vectorized_quadratic:
             q_grads = self._quadratic_coupling_gradients_vectorized(etas, cw)
             grad_arr += np.asarray(q_grads, dtype=float)
@@ -669,11 +773,20 @@ class EnergyCoordinator:
                 grad_arr[i] += w * float(gi)
                 grad_arr[j] += w * float(gj)
             else:
-                base = float(coup.coupling_energy(etas[i], etas[j], self.constraints))
-                bi = float(coup.coupling_energy(etas[i] + self.grad_eps, etas[j], self.constraints))
-                bj = float(coup.coupling_energy(etas[i], etas[j] + self.grad_eps, self.constraints))
-                grad_arr[i] += w * ((bi - base) / self.grad_eps)
-                grad_arr[j] += w * ((bj - base) / self.grad_eps)
+                gi = self._box_derivative(
+                    lambda value, coupling=coup, other=etas[j]: float(
+                        coupling.coupling_energy(value, other, self.constraints)
+                    ),
+                    float(etas[i]),
+                )
+                gj = self._box_derivative(
+                    lambda value, coupling=coup, other=etas[i]: float(
+                        coupling.coupling_energy(other, value, self.constraints)
+                    ),
+                    float(etas[j]),
+                )
+                grad_arr[i] += w * gi
+                grad_arr[j] += w * gj
         return grad_arr.tolist()
 
     def _grads(self, etas: List[OrderParameter]) -> List[float]:
@@ -840,9 +953,10 @@ class EnergyCoordinator:
             if isinstance(m, SupportsLocalEnergyGrad):
                 grad_buf[idx] = w * float(m.d_local_energy_d_eta(float(eta), self.constraints))
             else:
-                base = float(m.local_energy(eta, self.constraints))
-                bumped = float(m.local_energy(min(1.0, eta + self.grad_eps), self.constraints))
-                grad_buf[idx] = w * ((bumped - base) / self.grad_eps)
+                grad_buf[idx] = w * self._box_derivative(
+                    lambda value, module=m: float(module.local_energy(value, self.constraints)),
+                    float(eta),
+                )
         return energy_buf, grad_buf
 
     def _grad_buffer_for(self, n: int) -> np.ndarray:
@@ -882,32 +996,40 @@ class EnergyCoordinator:
             buf[:] = np.asarray(etas, dtype=float)
         return buf
 
-    def _step_with_backtracking(self, etas: List[OrderParameter], grads: List[float], step_init: float) -> List[float]:
+    def _step_with_backtracking(
+        self,
+        etas: List[OrderParameter],
+        objective_grads: List[float],
+        direction: List[float],
+        step_init: float,
+    ) -> List[float]:
+        """Projected Armijo search using the realized box-constrained displacement."""
         F0 = self._energy_value(etas)
         step = float(step_init)
-        gvec = np.asarray(grads, dtype=float)
-        g2 = float(np.dot(gvec, gvec))
-        local_bk = 0
-        for _ in range(self.max_backtrack + 1):
+        state = np.asarray(etas, dtype=float)
+        gradient = np.asarray(objective_grads, dtype=float)
+        direction_vector = np.asarray(direction, dtype=float)
+        if gradient.shape != state.shape or direction_vector.shape != state.shape:
+            raise ValueError("state, gradient, and line-search direction must have matching shapes")
+        for local_bk in range(self.max_backtrack + 1):
             trial_arr = self._trial_array_for(etas)
-            trial_arr -= step * gvec
+            trial_arr -= step * direction_vector
             np.clip(trial_arr, 0.0, 1.0, out=trial_arr)
+            displacement = trial_arr - state
+            directional_change = float(np.dot(gradient, displacement))
             trial = trial_arr.tolist()
             F1 = self._energy_value(trial)
-            if F1 <= F0 - self.armijo_c * step * g2:
+            if directional_change <= 0.0 and F1 <= F0 + self.armijo_c * directional_change:
                 self._last_step_backtracks = local_bk
                 self._total_backtracks += local_bk
                 self._last_acceptance_reason = "armijo_accepted"
                 return trial
-            step *= self.backtrack_factor
-            local_bk += 1
-        trial_arr = self._trial_array_for(etas)
-        trial_arr -= step_init * gvec
-        np.clip(trial_arr, 0.0, 1.0, out=trial_arr)
-        self._last_step_backtracks = local_bk
-        self._total_backtracks += local_bk
-        self._last_acceptance_reason = "armijo_failed_fallback"
-        return trial_arr.tolist()
+            if local_bk < self.max_backtrack:
+                step *= self.backtrack_factor
+        self._last_step_backtracks = self.max_backtrack
+        self._total_backtracks += self.max_backtrack
+        self._last_acceptance_reason = "armijo_failed_no_step"
+        return list(etas)
 
     def _estimate_lipschitz_bound(self, etas: List[OrderParameter]) -> float:
         """Conservative Gershgorin-style bound on gradient Lipschitz constant.
@@ -917,13 +1039,22 @@ class EnergyCoordinator:
         """
         return estimate_lipschitz_bound(self, etas)
 
+    def _estimate_preconditioned_lipschitz_bound(
+        self,
+        etas: List[OrderParameter],
+        preconditioner: np.ndarray,
+    ) -> float:
+        """Bound the Hessian normalized by the diagonal used for this update."""
+        return estimate_preconditioned_lipschitz_bound(self, etas, preconditioner)
+
     def _estimate_lipschitz_details(
         self,
         etas: List[OrderParameter],
         smoothing_epsilon: float = 1e-3,
         target_L: Optional[float] = None,
+        preconditioner: Optional[np.ndarray] = None,
     ) -> dict:
-        """Return detailed Gershgorin-like bound components and family costs.
+        """Return row contributions in the same geometry as the guarded update.
 
         Produces:
           - L_est: current Lipschitz estimate (float)
@@ -933,11 +1064,10 @@ class EnergyCoordinator:
           - global_margin: max(0, target_L - L_est)
           - family_costs: dict['coup:ClassName' -> ΔL per unit relative scaling (max over rows)]
 
-        Notes:
-          - Hinge contributions near activation are smoothed with a simple linear ramp in [-ε, 0].
-          - Family cost aggregates the maximum row contribution attributable to a family; this
-            approximates impact on the max row sum that defines L_est.
+        Built-in hinge families use their maximum curvature across both active
+        regions, so a proposal that crosses a hinge boundary remains covered.
         """
+        del smoothing_epsilon  # retained for call-site compatibility
         n = len(etas)
         if n == 0:
             return {
@@ -948,8 +1078,18 @@ class EnergyCoordinator:
                 "global_margin": 0.0,
                 "family_costs": {},
             }
-        diag = np.zeros(n, dtype=float)
-        offsum = np.zeros(n, dtype=float)
+        if preconditioner is None:
+            precision = np.ones(n, dtype=float)
+            geometry = "unpreconditioned"
+        else:
+            precision = np.asarray(preconditioner, dtype=float)
+            if precision.shape != (n,):
+                raise ValueError("preconditioner shape must match the coordinator state")
+            if not np.all(np.isfinite(precision)) or np.any(precision <= 0.0):
+                raise ValueError("preconditioner entries must be finite and positive")
+            geometry = "preconditioned"
+
+        row_sums = np.zeros(n, dtype=float)
         probe_epsilon = max(self.grad_eps * 0.5, 1e-6)
         for index, eta in enumerate(etas):
             lower = max(0.0, min(1.0, float(eta) - probe_epsilon))
@@ -958,8 +1098,9 @@ class EnergyCoordinator:
             if width <= 0.0:
                 continue
             curvature = (self._local_grad(index, upper) - self._local_grad(index, lower)) / width
-            if math.isfinite(curvature) and curvature > 0.0:
-                diag[index] += float(curvature)
+            if math.isnan(curvature):
+                raise ValueError("local curvature estimate must not be NaN")
+            row_sums[index] += abs(float(curvature)) / float(precision[index])
         # Per-row, per-family contributions to row sum
         per_row_family = {}  # row -> {family_key: contrib}
         for r in range(n):
@@ -971,70 +1112,60 @@ class EnergyCoordinator:
             d = per_row_family[row]
             d[fam] = float(d.get(fam, 0.0) + amount)
 
-        # Track per-edge costs (index-based), using the same smoothed contributions
+        # Track per-edge costs in the same normalized row geometry.
         edge_costs: dict[int, float] = {}
-
+        combined_weights = self._combined_term_weights()
         for edge_idx, (i, j, coup) in enumerate(self.couplings):
             key = f"coup:{coup.__class__.__name__}"
-            w_eff = float(self._combined_term_weights().get(key, 1.0))
+            w_eff = float(combined_weights.get(key, 1.0))
+            if w_eff == 0.0:
+                edge_costs[edge_idx] = 0.0
+                continue
+            diag_i = 0.0
+            diag_j = 0.0
+            off_ij = 0.0
             if isinstance(coup, QuadraticCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                add = 2.0 * w  # diag and off-diag magnitude per row
-                if add != 0.0:
-                    diag[i] += add
-                    diag[j] += add
-                    offsum[i] += add
-                    offsum[j] += add
-                    _add_row_family(i, key, add + add)  # diag+offsum contribution to row i
-                    _add_row_family(j, key, add + add)  # row j
-                    # Per-edge cost: max row contribution from this edge
-                    edge_costs[edge_idx] = float((add + add))
+                add = 2.0 * abs(float(getattr(coup, "weight", 0.0)) * w_eff)
+                diag_i = add
+                diag_j = add
+                off_ij = add
             elif isinstance(coup, DirectedHingeCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
-                gap = float(etas[j]) - float(etas[i])
-                # Smoothed activity in [-ε, 0] → [0,1]
-                if gap > 0.0:
-                    s = 1.0
-                elif -smoothing_epsilon < gap <= 0.0:
-                    s = (gap + smoothing_epsilon) / smoothing_epsilon
-                else:
-                    s = 0.0
-                if s > 0.0 and w != 0.0:
-                    add = 2.0 * w * s
-                    diag[i] += add
-                    diag[j] += add
-                    offsum[i] += add
-                    offsum[j] += add
-                    _add_row_family(i, key, add + add)
-                    _add_row_family(j, key, add + add)
-                    edge_costs[edge_idx] = float((add + add))
+                add = 2.0 * abs(float(getattr(coup, "weight", 0.0)) * w_eff)
+                diag_i = add
+                diag_j = add
+                off_ij = add
             elif isinstance(coup, AsymmetricHingeCoupling):
-                w = float(getattr(coup, "weight", 0.0)) * w_eff
+                w = abs(float(getattr(coup, "weight", 0.0)) * w_eff)
                 alpha = float(getattr(coup, "alpha_i", 1.0))
                 beta = float(getattr(coup, "beta_j", 1.0))
-                gap = beta * float(etas[j]) - alpha * float(etas[i])
-                if gap > 0.0:
-                    s = 1.0
-                elif -smoothing_epsilon < gap <= 0.0:
-                    s = (gap + smoothing_epsilon) / smoothing_epsilon
-                else:
-                    s = 0.0
-                if s > 0.0 and w != 0.0:
-                    add_i = 2.0 * w * (alpha * alpha) * s
-                    add_j = 2.0 * w * (beta * beta) * s
-                    add_off = 2.0 * w * abs(alpha * beta) * s
-                    diag[i] += add_i
-                    diag[j] += add_j
-                    offsum[i] += add_off
-                    offsum[j] += add_off
-                    _add_row_family(i, key, add_i + add_off)
-                    _add_row_family(j, key, add_j + add_off)
-                    edge_costs[edge_idx] = float(max(add_i + add_off, add_j + add_off))
+                diag_i = 2.0 * w * (alpha * alpha)
+                diag_j = 2.0 * w * (beta * beta)
+                off_ij = 2.0 * w * abs(alpha * beta)
+            elif isinstance(coup, SupportsCouplingCurvature):
+                reported_i, reported_j, reported_off = validate_curvature_bound_triplet(
+                    coup.coupling_curvature_bounds(
+                        float(etas[i]),
+                        float(etas[j]),
+                        self.constraints,
+                    )
+                )
+                scale = abs(w_eff)
+                diag_i = scale * reported_i
+                diag_j = scale * reported_j
+                off_ij = scale * reported_off
             else:
-                # GateBenefit (linear) and others: no curvature
-                continue
+                diag_i = math.inf
+                diag_j = math.inf
 
-        row_sums = (diag + offsum)
+            normalized_off = off_ij / math.sqrt(float(precision[i] * precision[j]))
+            contribution_i = diag_i / float(precision[i]) + normalized_off
+            contribution_j = diag_j / float(precision[j]) + normalized_off
+            row_sums[i] += contribution_i
+            row_sums[j] += contribution_j
+            _add_row_family(i, key, contribution_i)
+            _add_row_family(j, key, contribution_j)
+            edge_costs[edge_idx] = float(max(contribution_i, contribution_j))
+
         L_est = float(np.max(row_sums)) if row_sums.size > 0 else 0.0
         # Targets and margins
         if not target_L or not math.isfinite(target_L) or target_L <= 0.0:
@@ -1065,6 +1196,8 @@ class EnergyCoordinator:
             "global_margin": global_margin,
             "family_costs": family_costs,
             "edge_costs": {int(k): float(v) for k, v in edge_costs.items()},
+            "geometry": geometry,
+            "preconditioner": {i: float(precision[i]) for i in range(n)},
         }
 
     def _record_energy_history(self, energy: float) -> None:
@@ -1089,9 +1222,14 @@ class EnergyCoordinator:
             "attempted_steps": len(self._attempt_energy_history),
             "energy_trace": history,
             "attempt_energy_trace": list(self._attempt_energy_history),
+            "last_acceptance_reason": self._last_acceptance_reason,
+            "acceptance_reasons": list(self._acceptance_reason_history),
             "objective_version": int(self._objective_version),
             "guard_transitions": guard_transitions,
             "last_energy_drop_ratio": float(self._last_energy_drop_ratio),
+            "last_step_cap_slack": self._last_step_cap_slack,
+            "step_cap_slacks": list(self._step_cap_slack_history),
+            # Deprecated compatibility names retained for existing log readers.
             "last_contraction_margin": self._last_contraction_margin,
             "contraction_margins": list(self._contraction_margin_history),
         }
@@ -1227,34 +1365,23 @@ class EnergyCoordinator:
         self._vectorized_cache = None
         self._build_vectorized_cache()
 
-    def _active_indices(self, etas: List[OrderParameter]) -> Iterable[int]:
-        """Return indices participating in any coupling (plus their neighbors)."""
-        if self._adjacency is None:
-            return range(len(etas))
-        active: set[int] = set()
-        for idx, neighbors in enumerate(self._adjacency):
-            if neighbors:
-                active.add(idx)
-            for j, _coup in neighbors:
-                if 0 <= j < len(etas):
-                    active.add(j)
-        if not active:
-            return range(len(etas))
-        return tuple(sorted(active))
-
     def _local_grad(self, idx: int, eta_i: float) -> float:
         m = self.modules[idx]
         w = float(self._combined_term_weights().get(f"local:{m.__class__.__name__}", 1.0))
         if isinstance(m, SupportsLocalEnergyGrad):
             return float(w * m.d_local_energy_d_eta(float(eta_i), self.constraints))
-        base = float(m.local_energy(eta_i, self.constraints))
-        b = float(m.local_energy(min(1.0, eta_i + self.grad_eps), self.constraints))
-        return float(w * ((b - base) / self.grad_eps))
+        return float(
+            w
+            * self._box_derivative(
+                lambda value: float(m.local_energy(value, self.constraints)),
+                float(eta_i),
+            )
+        )
 
     def _combined_term_weights(self) -> dict[str, float]:
         base_tw: dict[str, float] = {}
         tw = self.constraints.get("term_weights", None)
-        if isinstance(tw, dict):
+        if isinstance(tw, Mapping):
             for k, v in tw.items():
                 try:
                     base_tw[str(k)] = float(v)  # type: ignore[arg-type]
@@ -1271,6 +1398,8 @@ class EnergyCoordinator:
         calibrated: dict[str, float] = {}
         for key, value in base_tw.items():
             v = float(value)
+            if not math.isfinite(v):
+                raise ValueError(f"term weight {key!r} must be finite")
             if floor:
                 v = max(v, floor)
             if ceiling is not None:
@@ -1296,11 +1425,18 @@ class EnergyCoordinator:
                 gi = w * float(gi)
                 gj = w * float(gj)
             else:
-                base = float(coup.coupling_energy(etas[i], etas[j], self.constraints))
-                bi = float(coup.coupling_energy(etas[i] + self.grad_eps, etas[j], self.constraints))
-                bj = float(coup.coupling_energy(etas[i], etas[j] + self.grad_eps, self.constraints))
-                gi = w * ((bi - base) / self.grad_eps)
-                gj = w * ((bj - base) / self.grad_eps)
+                gi = w * self._box_derivative(
+                    lambda value, coupling=coup, other=etas[j]: float(
+                        coupling.coupling_energy(value, other, self.constraints)
+                    ),
+                    float(etas[i]),
+                )
+                gj = w * self._box_derivative(
+                    lambda value, coupling=coup, other=etas[i]: float(
+                        coupling.coupling_energy(other, value, self.constraints)
+                    ),
+                    float(etas[j]),
+                )
             norms_sq[key] = float(norms_sq.get(key, 0.0) + gi * gi + gj * gj)
         # sqrt
         return {k: float(math.sqrt(v)) for k, v in norms_sq.items()}
@@ -1332,6 +1468,9 @@ class EnergyCoordinator:
         assert isinstance(self.modules, list) and len(self.modules) > 0, "at least one module required"
         assert self.grad_eps > 0.0, "grad_eps must be > 0"
         assert self.step_size > 0.0, "step_size must be > 0"
+        assert self.stiffness_epsilon > 0.0, "stiffness_epsilon must be > 0"
+        assert self.precision_epsilon > 0.0, "precision_epsilon must be > 0"
+        assert 0.0 < self.stability_cap_fraction < 1.0, "stability_cap_fraction must be in (0, 1)"
         if self.noise_mode is not None:
             allowed_noise_modes = {
                 "none",
@@ -1371,6 +1510,11 @@ class EnergyCoordinator:
         assert 0.0 < self.armijo_c < 1.0, "armijo_c must be between 0 and 1"
         assert 0.0 < self.backtrack_factor < 1.0, "backtrack_factor must be in (0,1)"
         assert self.max_backtrack >= 0, "max_backtrack must be non-negative"
+        if self.normalize_grads and self.stability_guard:
+            assert self.line_search, (
+                "normalize_grads with stability_guard requires line_search because the spectral cap "
+                "does not certify normalized-gradient dynamics"
+            )
         if self.term_weight_ceiling is not None:
             assert self.term_weight_ceiling >= self.term_weight_floor >= 0.0
         for i, j, _ in self.couplings:

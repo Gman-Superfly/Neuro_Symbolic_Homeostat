@@ -39,7 +39,7 @@ def main() -> None:
     # Aggregate allocation and cost columns row-wise (per step), if present
     alloc_total, cost_total = compute_alloc_cost_totals(df)
 
-    # Plot per-step curves for global spend, aggregated alloc/cost, and contraction margin when available
+    # Plot global spend, aggregate alloc/cost, and step-cap slack when available.
     has_spent = "spent:global" in df.columns
     fig, ax1 = plt.subplots(figsize=(8, 4))
     if has_spent:
@@ -48,18 +48,22 @@ def main() -> None:
         ax1.plot(alloc_total, label="alloc:total", color="tab:green", alpha=0.7)
     if cost_total is not None:
         ax1.plot(cost_total, label="cost:total", color="tab:red", alpha=0.5)
-    # Right axis for contraction margin when present.
-    has_margin = "contraction_margin" in df.columns
-    if has_margin:
+    # Prefer the corrected name; retain support for historical log files.
+    slack_column = (
+        "step_cap_slack"
+        if "step_cap_slack" in df.columns
+        else "contraction_margin" if "contraction_margin" in df.columns else None
+    )
+    if slack_column is not None:
         ax2 = ax1.twinx()
         lines2 = ax2.plot(
-            df["contraction_margin"],
-            label="contraction_margin",
+            df[slack_column],
+            label=slack_column,
             color="tab:orange",
             alpha=0.6,
         )
-        labels2 = ["contraction_margin"]
-        ax2.set_ylabel("contraction margin")
+        labels2 = [slack_column]
+        ax2.set_ylabel("step-cap slack")
     else:
         lines2, labels2 = [], []
     ax1.set_xlabel("step")

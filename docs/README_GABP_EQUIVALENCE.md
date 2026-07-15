@@ -1,108 +1,127 @@
-# Quadratic stiffness updates, Jacobi, and Gaussian BP
+# Quadratic stiffness, weighted Jacobi, and Gaussian BP
 
-Status: synchronous Jacobi is implemented and trajectory-tested; Gaussian BP is literature context.
-Scope: exact local algebra for the implemented stiffness update and the boundary of the message-passing analogy.
+Status: the synchronous diagonal-preconditioned update is implemented and trajectory-tested. Gaussian belief propagation is literature context.
 
----
+Scope: exact local algebra for the quadratic update, its contraction condition, and the boundary of the message-passing analogy.
 
-## 1. The implemented claim
+## Implemented quadratic update
 
-For a quadratic energy with SPD precision, the coordinator's stiffness update is exactly Jacobi:
-
-\[
-x^{(t+1)} = x^{(t)} - D^{-1}(Jx^{(t)}-h).
-\]
-
-Gaussian belief propagation addresses the same Gaussian mean problem through edge messages and cavity precisions. When GaBP converges, its mean solves the same system $Jx=h$. General GaBP is not a stationary Jacobi iteration, and this repository does not implement or test GaBP message updates. Sequential Gauss-Seidel remains a future scheduler target.
-
----
-
-## 2. The algebra
-
-Consider a quadratic energy function (Gaussian random field):
+Consider
 
 \[
-F(x) = \frac{1}{2} x^\top J x - h^\top x
+F(x)=\tfrac12x^\top Jx-h^\top x,
+\qquad J\succ0.
 \]
 
-Where:
-- \(x\): Vector of variables (order parameters).
-- \(J\): Precision matrix (Hessian / Stiffness). \(J_{ii} > 0\) is diagonal stiffness; \(J_{ij}\) is coupling strength.
-- \(h\): Potential vector (linear bias / input).
-
-Minimizing \(F(x)\) is equivalent to solving the linear system:
-\[
-J x = h
-\]
-
-Decompose \(J\) into **Diagonal (D)**, **Strictly Lower (L)**, and **Strictly Upper (U)** parts:
-\[ J = D + L + U \]
-
-### 2.1 Jacobi iteration (synchronous)
-
-The Jacobi update solves for \(x_i\) assuming neighbors are fixed at the *previous* step \(t\):
+The gradient is \(\nabla F(x)=Jx-h\), and minimizing \(F\) is equivalent to solving \(Jx=h\). Let \(D=\operatorname{diag}(J)\). When the coordinator's positive update diagonal is exactly \(P=D\), its unconstrained stiffness update is
 
 \[
-D x^{(t+1)} = h - (L + U) x^{(t)}
-\]
-\[
-x^{(t+1)} = D^{-1} (h - (J - D) x^{(t)}) = x^{(t)} - D^{-1} (J x^{(t)} - h)
+x^{(t+1)}=x^{(t)}-\alpha D^{-1}(Jx^{(t)}-h).
 \]
 
-In gradient terms (since \(\nabla F = Jx - h\)):
-\[
-x^{(t+1)} = x^{(t)} - D^{-1} \nabla F(x^{(t)})
-\]
+This is weighted Jacobi with relaxation parameter \(\alpha\). It reduces to classical Jacobi when \(\alpha=1\). The repository default does not imply \(\alpha=1\), so the general implementation must be described as weighted Jacobi.
 
-This is gradient descent with inverse-diagonal stiffness preconditioning.
+The coordinator also projects every coordinate into \([0,1]\). If clipping changes a proposal, then the realized path is projected weighted Jacobi. If the configured epsilon floor changes \(P\) from \(D\), then the path remains a diagonal-preconditioned iteration but is not exact Jacobi.
 
-This update uses the previous iterate for every neighbor and therefore has Jacobi scheduling semantics.
+## Algebra
 
-### 2.2 Gauss-Seidel iteration (sequential)
-
-The GS update solves for \(x_i\) using *new* values for neighbors \(j < i\) and *old* values for \(j > i\):
+Write
 
 \[
-(D + L) x^{(t+1)} = h - U x^{(t)}
+J=D+L+U,
 \]
+
+where \(L\) and \(U\) are the strictly lower and upper parts. Classical Jacobi solves
+
 \[
-x^{(t+1)} = (D + L)^{-1} (h - U x^{(t)})
+Dx^{(t+1)}=h-(L+U)x^{(t)},
 \]
 
-This corresponds to updating variables one by one in order, immediately using the fresh values for the next variable.
+which is equivalent to
 
-This is a sequential stiffness-scaled linear solve. The current coordinator does not expose it as a dedicated mode.
+\[
+x^{(t+1)}=x^{(t)}-D^{-1}(Jx^{(t)}-h).
+\]
 
----
+Adding the scalar \(\alpha\) gives weighted Jacobi. Every coordinate reads neighbors from the previous iterate, so the scheduler remains synchronous.
 
-## 3. Why this matters for the Homeostat
+Gauss-Seidel instead uses
 
-1. Efficiency: the synchronous path needs the diagonal stiffness \(D\), stored in `_precision_cache`, and the gradient \(\nabla F\).
-2. Vectorization: the update \(x \leftarrow x - \nabla F / \text{diag}(J)\) maps directly to array operations.
-3. Stability: Jacobi convergence requires \(\rho(I - D^{-1}J) < 1\). The repository also applies a separate Gershgorin Lipschitz step cap for gradient iterations, which enforces \(\rho(I-\alpha H)<1\) in quadratic/SPD cases when the bound is valid.
+\[
+(D+L)x^{(t+1)}=h-Ux^{(t)}.
+\]
 
----
+This triangular solve consumes fresh lower-index values during the same sweep. The current coordinator does not expose a dedicated Gauss-Seidel stiffness mode.
 
-## 4. References
+## Convergence in the update geometry
 
-1.  **Weiss, Y., & Freeman, W. T. (2001).** *Correctness of Belief Propagation in Gaussian Graphical Models of Arbitrary Topology.* Neural Computation.
-    *   **Local use**: correctness properties for Gaussian BP means when the message procedure converges. It does not prove that the coordinator implements GaBP.
-2.  **Malioutov, D., et al. (2006).** *Walk-sums and belief propagation in Gaussian graphical models.* JMLR.
-    *   **Local use**: walk-sum interpretation and sufficient convergence conditions for Gaussian BP. These conditions are related to, but distinct from, the tested Jacobi condition.
-3.  **Saad, Y. (2003).** *Iterative Methods for Sparse Linear Systems.* SIAM.
-    *   **Local use**: Jacobi and Gauss-Seidel convergence properties for linear systems.
+Weighted Jacobi has iteration matrix
 
----
+\[
+I-\alpha D^{-1}J.
+\]
 
-## 5. In the code
+Although this matrix need not be symmetric in Euclidean coordinates, it is similar to
 
-- Where: `core/coordinator.py` inside `relax_etas`.
-- Flag: `use_stiffness_updates=True`.
-- Implemented logic:
-  ```python
-  # Exact Jacobi form for a quadratic system
-  diag_stiffness = self.get_precision_diagonal() # D
-  grad = self._grads(etas)                       # Jx - h
-  step = grad / diag_stiffness                   # D^-1 (Jx - h)
-  etas -= step
-  ```
+\[
+I-\alpha D^{-1/2}JD^{-1/2}.
+\]
+
+The normalized matrix \(A=D^{-1/2}JD^{-1/2}\) is SPD. If a bound \(L_D\) satisfies \(\lambda_{\max}(A)\le L_D\) and \(0<\alpha<2/L_D\), then
+
+\[
+\rho(I-\alpha D^{-1}J)
+=\rho(I-\alpha A)<1.
+\]
+
+The coordinator forms the normalized Gershgorin bound
+
+\[
+L_D=\max_i\left(
+\frac{\bar j_{ii}}{d_i}
++\sum_{k\ne i}\frac{\bar j_{ik}}{\sqrt{d_i d_k}}
+\right).
+\]
+
+The barred entries bound the corresponding absolute Hessian entries. This is the relevant bound for the implemented preconditioned matrix. A row-sum bound on \(J\) alone does not certify \(D^{-1}J\).
+
+For the box-projected update, coordinate clipping is also projection in the \(D\)-norm because \(D\) is diagonal. Projection is nonexpansive in that norm. If \(x_C^\star\) is the unique constrained quadratic minimizer, then
+
+\[
+\lVert x^{(t+1)}-x_C^\star\rVert_D
+\le q_D\lVert x^{(t)}-x_C^\star\rVert_D,
+\]
+
+where
+
+\[
+q_D=\max_{\lambda\in\sigma(A)}|1-\alpha\lambda|<1.
+\]
+
+The implementation generalizes this result from \(D\) to its exact positive update diagonal \(P\). See `docs/STABILITY_GUARANTEES.md` for the full statement.
+
+## Gaussian BP boundary
+
+Gaussian belief propagation uses edge messages and evolving cavity precisions. When GaBP converges, its mean solves the same linear system \(Jx=h\). General GaBP is not a stationary weighted-Jacobi iteration, and this repository does not implement or test GaBP message updates.
+
+The shared solution identifies the common Gaussian mean problem. It does not make the transient algorithms stepwise equivalent. Walk-summability and other GaBP convergence conditions belong to the message-passing algorithm; the coordinator tests the spectral condition for its own preconditioned iteration.
+
+## Code path
+
+The quadratic stiffness path in `core/coordinator.py` performs the equivalent operations
+
+```python
+gradient = compose_gradient(state)              # J @ x - h
+preconditioner = get_update_preconditioner()   # exact positive P
+update_bound = normalized_gershgorin(P)         # bounds P^-1/2 J P^-1/2
+alpha = guarded_step(update_bound)
+state = clip_to_box(state - alpha * gradient / preconditioner)
+```
+
+The update, normalized bound, and diagnostic `preconditioner_diagonal` refer to the same \(P\).
+
+## References
+
+1. Weiss, Y., Freeman, W. T. (2001). *Correctness of Belief Propagation in Gaussian Graphical Models of Arbitrary Topology.* Neural Computation. Use: correctness of Gaussian BP means when the message procedure converges. Local implication: GaBP and the quadratic coordinator can target the same linear-system solution. Limits: the result does not identify their transient updates.
+2. Malioutov, D., Johnson, J. K., Willsky, A. S. (2006). *Walk-sums and belief propagation in Gaussian graphical models.* Journal of Machine Learning Research. Use: walk-sum interpretation and sufficient convergence conditions for GaBP. Local implication: message-passing convergence has its own matrix conditions. Limits: those conditions do not replace the coordinator's weighted-Jacobi condition.
+3. Saad, Y. (2003). *Iterative Methods for Sparse Linear Systems.* SIAM. Use: Jacobi, weighted Jacobi, and Gauss-Seidel stationary iterations. Local implication: the coordinator's quadratic diagonal-preconditioned path is weighted Jacobi under the conditions stated above. Limits: the repository does not implement a dedicated Gauss-Seidel scheduler.

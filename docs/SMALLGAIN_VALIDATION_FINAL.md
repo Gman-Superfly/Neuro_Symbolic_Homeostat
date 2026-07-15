@@ -10,15 +10,17 @@ GradNorm presets in the included benchmark scenarios.
 
 It does not test a general nonlinear small-gain theorem. The formal contraction
 claim remains limited to quadratic/SPD energy with a valid Gershgorin upper
-bound and a step below \(2/L\).
+bound in the geometry of the implemented update. For a diagonal
+preconditioner \(P\), that bound applies to
+\(P^{-1/2}HP^{-1/2}\), not to the raw Hessian alone.
 
 ## Implementation checks
 
 The focused tests verify that:
 
 - family costs use the same `coup:<ClassName>` keys as gradient norms;
-- the coordinator reports positive margin when the requested step leaves
-  curvature capacity;
+- the coordinator reports positive step-cap slack when the requested step
+  remains below the normalized curvature cap;
 - accepted allocations remain within the global spend budget;
 - weight floors, ceilings, and per-step limits are respected;
 - missing coupling values return the input weights unchanged;

@@ -113,13 +113,58 @@ def build_manifest(root: Path, artifact_paths: Sequence[str] = ARTIFACTS) -> Dic
     }
 
 
+def verify_manifest(
+    root: Path,
+    manifest_path: Path,
+    artifact_paths: Sequence[str] = ARTIFACTS,
+) -> list[str]:
+    """Return integrity errors for the recorded publication artifacts."""
+    if not manifest_path.is_file():
+        return [f"missing manifest: {manifest_path}"]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"cannot read manifest: {exc}"]
+    recorded = {
+        str(item.get("path", "")): item
+        for item in manifest.get("artifacts", [])
+        if isinstance(item, dict)
+    }
+    errors: list[str] = []
+    for relative_path in artifact_paths:
+        normalized = relative_path.replace("\\", "/")
+        path = root / relative_path
+        if not path.is_file():
+            errors.append(f"missing artifact: {normalized}")
+            continue
+        expected = recorded.get(normalized)
+        if expected is None:
+            errors.append(f"artifact absent from manifest: {normalized}")
+            continue
+        actual = _artifact(root, relative_path)
+        for field in ("sha256", "bytes", "data_rows"):
+            if field in actual and actual[field] != expected.get(field):
+                errors.append(
+                    f"artifact {normalized} has {field}={actual[field]!r}, "
+                    f"expected {expected.get(field)!r}"
+                )
+    return errors
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("logs/reproducibility_manifest.json"))
+    parser.add_argument("--check", action="store_true", help="Verify recorded artifact hashes without rewriting the manifest.")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    manifest = build_manifest(root)
     output = args.output if args.output.is_absolute() else root / args.output
+    if args.check:
+        errors = verify_manifest(root, output)
+        if errors:
+            raise SystemExit("reproducibility manifest check failed:\n" + "\n".join(errors))
+        print(f"verified reproducibility manifest {output.relative_to(root)}")
+        return
+    manifest = build_manifest(root)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote reproducibility manifest to {output.relative_to(root)}")

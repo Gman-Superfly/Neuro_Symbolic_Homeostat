@@ -60,7 +60,7 @@ coordinator = EnergyCoordinator.from_config(
 )
 ```
 
-The stability cap uses the composed curvature bound under the assumptions documented in `docs/STABILITY_GUARANTEES.md`. Stiffness updates divide each coordinate by the reported diagonal curvature. Precision-orthogonal noise scales the candidate toward lower-curvature coordinates and then re-projects it so its dot product with the ordinary gradient is zero to numerical tolerance.
+The stability cap uses the composed curvature bound under the assumptions documented in `docs/STABILITY_GUARANTEES.md`. A stiffness update constructs \(P_{ii}=\max(\varepsilon,\Lambda_{ii})\); the normalized bound and gradient division consume that same positive diagonal. Precision-orthogonal noise scales the candidate toward lower-curvature coordinates and then re-projects it. Above the ordinary-gradient threshold, one uniform box-feasible scale preserves a zero dot product with that gradient to numerical tolerance.
 
 Metric modes require either an SPD `metric_matrix` or a `metric_solve` callable that applies $M^{-1}$. The implementation uses the metric gradient $M^{-1}g$ as the projection direction and checks the final first-order condition against the ordinary gradient covector $g$.
 

@@ -18,3 +18,5 @@ class CoordinatorSnapshot:
     term_weights: Mapping[str, float]
     term_gradient_norms: Mapping[str, float]
     objective_version: int
+    update_lipschitz_bound: float = 0.0
+    preconditioner_diagonal: Tuple[float, ...] = ()

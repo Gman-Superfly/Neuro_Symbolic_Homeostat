@@ -7,8 +7,20 @@ curvature-aware step contract.
 
 ## Mechanism
 
-The coordinator estimates a Gershgorin upper bound \(\hat L\) for the current
-energy curvature. For the step \(\alpha\) and safety fraction \(f\), the
+The coordinator estimates a Gershgorin upper bound in the geometry of the
+executed update. For an ordinary gradient step this is the raw Hessian bound
+\(L_H\). For a diagonal-preconditioned step it is the normalized bound
+
+\[
+L_P=\max_i\left(
+\frac{\bar h_{ii}}{p_i}
++\sum_{j\ne i}\frac{\bar h_{ij}}{\sqrt{p_i p_j}}
+\right),
+\]
+
+which bounds \(P^{-1/2}HP^{-1/2}\). The diagonal \(P\) is the exact positive
+preconditioner used to divide the gradient. Write the selected bound as
+\(L_{\mathrm{update}}\). For step \(\alpha\) and safety fraction \(f\), the
 allocator uses the curvature limit
 
 \[
@@ -18,11 +30,30 @@ L_{limit} = \frac{2f}{\alpha}.
 Here \(f\) is `stability_cap_fraction`. The available global margin is
 
 \[
-m = \max(0, L_{limit} - \hat L).
+m = \max(0, L_{limit} - L_{\mathrm{update}}).
 \]
 
-The adapter may spend `budget_fraction * m`. This budget does not replace the
-step cap or the accepted-step energy guard.
+The adapter may spend `budget_fraction * m`. Family and edge costs use the same
+raw or normalized row geometry as \(L_{\mathrm{update}}\). This budget does not
+replace the step cap, the quadratic contraction condition, projected Armijo,
+or the accepted-step energy guard.
+
+Built-in directed and asymmetric hinges contribute worst-case curvature across
+their active and inactive regions, which covers a proposal that crosses an
+active-set boundary. A nonlinear or custom report must remain valid over the
+realized proposal segment for a fixed-step theorem. Otherwise, use projected
+Armijo.
+
+Gate-benefit deltas are finite, read-only snapshots for the complete solver
+call. Plain gate benefit and damped power \(p=1\) are linear and have zero
+Hessian cost. For damped energy \(-a\eta^p\) with \(p\ge2\), the allocator sees
+the exact box-wide absolute diagonal cost \(|a|p(p-1)\). This magnitude bound
+does not imply positive curvature; the term is concave when \(a>0\), and
+contraction still requires an SPD total Hessian. For nonzero \(a\), damped
+powers \(1<p<2\) have no finite closed-box gradient-Lipschitz bound at zero, so
+a fixed-step guarded run fails closed unless projected Armijo is enabled. A zero
+frozen coefficient removes the term and gives a zero curvature report. Powers
+below one are rejected.
 
 For each coupling family, the coordinator reports a curvature cost. The
 adapter uses squared gradient norm as a local value proxy:
@@ -64,9 +95,10 @@ coordinator = EnergyCoordinator(
 )
 ```
 
-`stability_guard=True` supplies the curvature limit used by the surrounding
-relaxation contract. `expose_lipschitz_details=True` requests family costs and
-margin telemetry. The benchmark preset enables both settings.
+`stability_guard=True` supplies the geometry-matched curvature limit used by
+the surrounding relaxation contract. `expose_lipschitz_details=True` requests
+family costs, row margins, the active geometry label, and the preconditioner
+used for normalized rows. The benchmark preset enables both settings.
 
 ## Current evidence
 
@@ -107,6 +139,11 @@ or task-level data.
 - `margin:global`: available global curvature margin.
 - `margin:row:<index>`: row margin telemetry.
 
+The separate `step_cap_slack` field is
+\((2/L_{\mathrm{update}})-\alpha_{\mathrm{used}}\). It is distance from the
+uncushioned step boundary and is not a spectral contraction factor. The older
+`contraction_margin` field remains a deprecated compatibility alias.
+
 ```python
 from cf_logging.observability import EnergyBudgetTracker
 
@@ -128,10 +165,10 @@ uv run python -m experiments.benchmark_delta_f90 `
 
 The unit tests cover ranking, bounds, fallback behavior, coordinator cost-key
 integration, positive margin spend, monotone accepted energy on a small graph,
-and the quadratic/SPD contraction condition.
+and the quadratic/SPD condition in the geometry of the executed update.
 
 ## References
 
 - Varga, R. S. (2004). *Gersgorin and His Circles*. Springer. Use: row-sum bounds for eigenvalue localization. Local implication: the coordinator can form a conservative curvature estimate from local and coupling contributions. Limits: the bound can be loose.
-- Boyd, S., Vandenberghe, L. (2004). *Convex Optimization*. Cambridge University Press. Use: gradient descent step conditions for smooth objectives. Local implication: the fixed-step quadratic/SPD contract requires \(\alpha < 2/L\). Limits: mixed nonlinear regimes rely on local bounds and accepted-step checks.
+- Boyd, S., Vandenberghe, L. (2004). *Convex Optimization*. Cambridge University Press. Use: gradient descent and projected-gradient step conditions for smooth objectives. Local implication: the fixed-step quadratic/SPD contract requires \(\alpha < 2/L_{\mathrm{update}}\) in the executed geometry. Limits: state-dependent terms require segment-valid bounds or line search.
 - Vidyasagar, M. (1993). *Nonlinear Systems Analysis*. Prentice Hall. Use: small-gain framing for bounded feedback interactions. Local implication: coupling adaptation should expose and limit estimated interaction spend. Limits: this family-level allocator is not a nonlinear stability certificate.

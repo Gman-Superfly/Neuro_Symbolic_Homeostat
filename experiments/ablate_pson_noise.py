@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 import numpy as np
 
 from core.coordinator import EnergyCoordinator
+from core.coordinator_noise import apply_box_feasible_noise
 from core.couplings import (
     AsymmetricHingeCoupling,
     DirectedHingeCoupling,
@@ -114,6 +115,22 @@ class SyntheticCase:
             "initial_curvature_max": maximum,
             "initial_curvature_ratio": maximum / minimum if minimum > 0.0 else float("inf"),
         }
+
+
+@dataclass(frozen=True)
+class NoiseCurvatureCosts:
+    """Requested and initial-state box-feasible costs on shared noise draws."""
+
+    diagonal_proxy_mean: float
+    diagonal_proxy_draws: List[float]
+    full_hessian_mean: float
+    full_hessian_draws: List[float]
+    realized_diagonal_proxy_mean: float
+    realized_diagonal_proxy_draws: List[float]
+    realized_full_hessian_mean: float
+    realized_full_hessian_draws: List[float]
+    box_scale_mean: float
+    box_scaled_fraction: float
 
 
 def delta_f90(energies: List[float]) -> int:
@@ -227,23 +244,151 @@ def build_case(scenario: str, seed: int, base_size: int) -> SyntheticCase:
     return SyntheticCase(modules, couplings, {}, inputs, "chain_with_pair_hinges", "piecewise_quadratic")
 
 
-def curvature_noise_cost(
+def synthetic_objective_hessian(
+    case: SyntheticCase,
+    etas: Sequence[float],
+    *,
+    term_weights: Mapping[str, float] | None = None,
+) -> np.ndarray:
+    """Return the exact Hessian of a generated objective at ``etas``.
+
+    The seven synthetic families contain quadratic and quartic local wells,
+    quadratic couplings, piecewise-quadratic hinges, and linear gate-benefit
+    terms. Hinge curvature is selected from the active branch at the supplied
+    state. The Hessian is undefined exactly at a hinge kink, so this helper
+    rejects that state instead of silently choosing a one-sided value.
+    """
+    values = np.asarray(etas, dtype=float)
+    if values.shape != (len(case.modules),):
+        raise ValueError("etas must contain one scalar per synthetic module")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("etas must be finite")
+
+    if term_weights is None:
+        configured_weights = case.constraints.get("term_weights", {})
+        weights = configured_weights if isinstance(configured_weights, Mapping) else {}
+    else:
+        weights = term_weights
+
+    def objective_weight(kind: str, term: Any) -> float:
+        key = f"{kind}:{term.__class__.__name__}"
+        return float(weights.get(key, 1.0))
+
+    hessian = np.zeros((values.size, values.size), dtype=float)
+    for index, module in enumerate(case.modules):
+        local_weight = objective_weight("local", module)
+        if isinstance(module, QuadraticWell):
+            local_curvature = float(module.curvature_value)
+        elif isinstance(module, QuarticWell):
+            diff = float(values[index]) - float(module.target)
+            local_curvature = float(
+                module.quadratic_curvature + 3.0 * module.quartic_strength * diff * diff
+            )
+        else:
+            raise TypeError(
+                f"unsupported synthetic local-energy type: {module.__class__.__name__}"
+            )
+        hessian[index, index] += local_weight * local_curvature
+
+    for i, j, coupling in case.couplings:
+        coupling_weight = objective_weight("coup", coupling)
+        if isinstance(coupling, GateBenefitCoupling):
+            # With caller-supplied benefit frozen, this term is linear in eta_i.
+            continue
+        if isinstance(coupling, QuadraticCoupling):
+            scale_i = 1.0
+            scale_j = 1.0
+        elif isinstance(coupling, DirectedHingeCoupling):
+            gap = float(values[j]) - float(values[i])
+            if gap == 0.0:
+                raise ValueError("synthetic Hessian is undefined at a directed-hinge kink")
+            if gap < 0.0:
+                continue
+            scale_i = 1.0
+            scale_j = 1.0
+        elif isinstance(coupling, AsymmetricHingeCoupling):
+            scale_i = float(coupling.alpha_i)
+            scale_j = float(coupling.beta_j)
+            gap = scale_j * float(values[j]) - scale_i * float(values[i])
+            if gap == 0.0:
+                raise ValueError("synthetic Hessian is undefined at an asymmetric-hinge kink")
+            if gap < 0.0:
+                continue
+        else:
+            raise TypeError(
+                f"unsupported synthetic coupling type: {coupling.__class__.__name__}"
+            )
+
+        curvature_scale = 2.0 * coupling_weight * float(coupling.weight)
+        hessian[i, i] += curvature_scale * scale_i * scale_i
+        hessian[j, j] += curvature_scale * scale_j * scale_j
+        cross_curvature = -curvature_scale * scale_i * scale_j
+        hessian[i, j] += cross_curvature
+        hessian[j, i] += cross_curvature
+
+    return hessian
+
+
+def noise_curvature_costs(
     coord: EnergyCoordinator,
     etas: List[float],
+    full_hessian: np.ndarray,
     seed: int,
     samples: int,
-) -> Tuple[float, List[float]]:
+) -> NoiseCurvatureCosts:
+    """Measure requested and box-feasible curvature costs on identical draws.
+
+    ``build_noise_vector`` returns the requested-magnitude direction. The
+    coordinator then applies one uniform scalar to keep the complete noise
+    vector inside the box. Both quantities are retained so directional quality
+    and the realized pipeline are not conflated.
+    """
     assert samples > 0, "noise cost samples must be positive"
     snapshot = coord.inspect_state(etas)
     grad = np.asarray(snapshot.gradient, dtype=float)
     diag = np.asarray(snapshot.precision_diagonal, dtype=float)
+    hessian = np.asarray(full_hessian, dtype=float)
+    if hessian.shape != (grad.size, grad.size):
+        raise ValueError("full_hessian shape must match the synthetic state dimension")
+    if not np.all(np.isfinite(hessian)):
+        raise ValueError("full_hessian must be finite")
     rng = np.random.default_rng(seed)
-    costs: List[float] = []
+    diagonal_proxy_draws: List[float] = []
+    full_hessian_draws: List[float] = []
+    realized_diagonal_proxy_draws: List[float] = []
+    realized_full_hessian_draws: List[float] = []
+    box_scales: List[float] = []
+    state = np.asarray(etas, dtype=float)
     for _ in range(samples):
         raw = rng.normal(0.0, 1.0, size=grad.shape)
         noise = coord.build_noise_vector(raw, grad)
-        costs.append(float(np.sum(diag * noise * noise)))
-    return float(np.mean(costs)), costs
+        diagonal_proxy_draws.append(float(np.sum(diag * noise * noise)))
+        full_hessian_draws.append(float(noise @ hessian @ noise))
+        proposal = apply_box_feasible_noise(state, noise)
+        realized_noise = proposal - state
+        requested_norm = float(np.linalg.norm(noise))
+        realized_norm = float(np.linalg.norm(realized_noise))
+        box_scale = realized_norm / requested_norm if requested_norm > 0.0 else 1.0
+        box_scale = max(0.0, min(1.0, box_scale))
+        box_scales.append(float(box_scale))
+        realized_diagonal_proxy_draws.append(
+            float(np.sum(diag * realized_noise * realized_noise))
+        )
+        realized_full_hessian_draws.append(
+            float(realized_noise @ hessian @ realized_noise)
+        )
+    return NoiseCurvatureCosts(
+        diagonal_proxy_mean=float(np.mean(diagonal_proxy_draws)),
+        diagonal_proxy_draws=diagonal_proxy_draws,
+        full_hessian_mean=float(np.mean(full_hessian_draws)),
+        full_hessian_draws=full_hessian_draws,
+        realized_diagonal_proxy_mean=float(np.mean(realized_diagonal_proxy_draws)),
+        realized_diagonal_proxy_draws=realized_diagonal_proxy_draws,
+        realized_full_hessian_mean=float(np.mean(realized_full_hessian_draws)),
+        realized_full_hessian_draws=realized_full_hessian_draws,
+        box_scale_mean=float(np.mean(box_scales)),
+        box_scaled_fraction=float(np.mean(np.asarray(box_scales) < 1.0 - 1e-12)),
+    )
 
 
 def run_one(
@@ -275,8 +420,20 @@ def run_one(
         continue_after_rejection=True,
     )
     etas = coord.compute_etas(case.inputs)
-    initial_energy = coord.inspect_state(etas).energy
-    noise_cost, noise_cost_draws = curvature_noise_cost(coord, list(etas), seed + 10_000, noise_cost_samples)
+    initial_snapshot = coord.inspect_state(etas)
+    initial_energy = initial_snapshot.energy
+    initial_hessian = synthetic_objective_hessian(
+        case,
+        etas,
+        term_weights=initial_snapshot.term_weights,
+    )
+    noise_costs = noise_curvature_costs(
+        coord,
+        list(etas),
+        initial_hessian,
+        seed + 10_000,
+        noise_cost_samples,
+    )
     start = time.perf_counter()
     out = coord.relax_etas(etas, steps=steps)
     wall_time = time.perf_counter() - start
@@ -302,8 +459,29 @@ def run_one(
         "energy_initial": initial_energy,
         "energy_final": final_energy,
         "energy_drop": initial_energy - final_energy,
-        "noise_curvature_cost": noise_cost,
-        "noise_curvature_cost_draws": ";".join(f"{value:.17g}" for value in noise_cost_draws),
+        # Compatibility fields: these are diagonal-only curvature proxies.
+        "noise_curvature_cost": noise_costs.diagonal_proxy_mean,
+        "noise_curvature_cost_draws": ";".join(
+            f"{value:.17g}" for value in noise_costs.diagonal_proxy_draws
+        ),
+        "noise_diagonal_curvature_proxy": noise_costs.diagonal_proxy_mean,
+        "noise_diagonal_curvature_proxy_draws": ";".join(
+            f"{value:.17g}" for value in noise_costs.diagonal_proxy_draws
+        ),
+        "noise_full_hessian_cost": noise_costs.full_hessian_mean,
+        "noise_full_hessian_cost_draws": ";".join(
+            f"{value:.17g}" for value in noise_costs.full_hessian_draws
+        ),
+        "noise_realized_diagonal_curvature_proxy": noise_costs.realized_diagonal_proxy_mean,
+        "noise_realized_diagonal_curvature_proxy_draws": ";".join(
+            f"{value:.17g}" for value in noise_costs.realized_diagonal_proxy_draws
+        ),
+        "noise_realized_full_hessian_cost": noise_costs.realized_full_hessian_mean,
+        "noise_realized_full_hessian_cost_draws": ";".join(
+            f"{value:.17g}" for value in noise_costs.realized_full_hessian_draws
+        ),
+        "noise_box_scale_mean": noise_costs.box_scale_mean,
+        "noise_box_scaled_fraction": noise_costs.box_scaled_fraction,
         "wall_time_sec": wall_time,
     }
 
@@ -333,16 +511,41 @@ def paired_bootstrap_summary(
     assert seeds, f"no paired rows for {scenario}/{baseline_mode}"
     assert seeds == sorted(comparison), "paired modes must contain identical seeds"
 
-    baseline_cost = np.asarray([float(baseline[seed]["noise_curvature_cost"]) for seed in seeds], dtype=float)
-    comparison_cost = np.asarray([float(comparison[seed]["noise_curvature_cost"]) for seed in seeds], dtype=float)
+    paired_rows = [baseline[seed] for seed in seeds] + [comparison[seed] for seed in seeds]
+    if all("noise_realized_full_hessian_cost" in row for row in paired_rows):
+        cost_field = "noise_realized_full_hessian_cost"
+        draws_field = "noise_realized_full_hessian_cost_draws"
+        cost_metric = "initial_box_feasible_full_hessian"
+    elif all("noise_full_hessian_cost" in row for row in paired_rows):
+        cost_field = "noise_full_hessian_cost"
+        draws_field = "noise_full_hessian_cost_draws"
+        cost_metric = "legacy_initial_requested_full_hessian"
+    elif all("noise_diagonal_curvature_proxy" in row for row in paired_rows):
+        cost_field = "noise_diagonal_curvature_proxy"
+        draws_field = "noise_diagonal_curvature_proxy_draws"
+        cost_metric = "initial_diagonal_curvature_proxy"
+    else:
+        # Compatibility with result rows generated before the proxy was relabeled.
+        cost_field = "noise_curvature_cost"
+        draws_field = "noise_curvature_cost_draws"
+        cost_metric = "legacy_initial_diagonal_curvature_proxy"
+
+    baseline_cost = np.asarray(
+        [float(baseline[seed][cost_field]) for seed in seeds],
+        dtype=float,
+    )
+    comparison_cost = np.asarray(
+        [float(comparison[seed][cost_field]) for seed in seeds],
+        dtype=float,
+    )
     assert np.all(baseline_cost > 0.0), "relative reduction requires positive baseline costs"
     absolute_reduction = baseline_cost - comparison_cost
     relative_reduction = 1.0 - comparison_cost / baseline_cost
 
     def parsed_draws(row: Mapping[str, Any]) -> np.ndarray:
-        encoded = str(row.get("noise_curvature_cost_draws", "")).strip()
+        encoded = str(row.get(draws_field, "")).strip()
         if not encoded:
-            return np.asarray([float(row["noise_curvature_cost"])], dtype=float)
+            return np.asarray([float(row[cost_field])], dtype=float)
         return np.asarray([float(value) for value in encoded.split(";")], dtype=float)
 
     baseline_draws = np.stack([parsed_draws(baseline[seed]) for seed in seeds])
@@ -385,6 +588,8 @@ def paired_bootstrap_summary(
         "bootstrap_samples": bootstrap_samples,
         "bootstrap_seed": bootstrap_seed,
         "bootstrap_method": "paired_hierarchical_seed_draw",
+        "noise_cost_metric": cost_metric,
+        "noise_cost_field": cost_field,
         "baseline_cost_mean": float(np.mean(baseline_cost)),
         "comparison_cost_mean": float(np.mean(comparison_cost)),
         "absolute_reduction_mean": float(np.mean(absolute_reduction)),
@@ -469,15 +674,27 @@ def main() -> None:
             subset = [row for row in rows if row["scenario"] == scenario and row["mode"] == mode]
             mean_drop = float(np.mean([row["energy_drop"] for row in subset]))
             mean_accept = float(np.mean([row["acceptance_rate"] for row in subset]))
-            mean_noise_cost = float(np.mean([row["noise_curvature_cost"] for row in subset]))
+            mean_diagonal_proxy = float(
+                np.mean([row["noise_realized_diagonal_curvature_proxy"] for row in subset])
+            )
+            mean_full_hessian_cost = float(
+                np.mean([row["noise_realized_full_hessian_cost"] for row in subset])
+            )
+            mean_box_scaled_fraction = float(
+                np.mean([row["noise_box_scaled_fraction"] for row in subset])
+            )
             print(
                 f"{scenario:24s} {mode:20s} "
-                f"drop={mean_drop:.6f} accept={mean_accept:.3f} noise_curvature_cost={mean_noise_cost:.6e}"
+                f"drop={mean_drop:.6f} accept={mean_accept:.3f} "
+                f"realized_diagonal_curvature_proxy={mean_diagonal_proxy:.6e} "
+                f"realized_full_hessian_cost={mean_full_hessian_cost:.6e} "
+                f"box_scaled_fraction={mean_box_scaled_fraction:.3f}"
             )
         for summary in (row for row in summaries if row["scenario"] == scenario):
             print(
                 f"{scenario:24s} precision_orthogonal vs {summary['baseline_mode']:10s} "
-                f"paired_cost_reduction={100.0 * float(summary['relative_reduction_mean']):.2f}% "
+                f"paired_{summary['noise_cost_metric']}_cost_reduction="
+                f"{100.0 * float(summary['relative_reduction_mean']):.2f}% "
                 f"95% bootstrap CI "
                 f"[{100.0 * float(summary['relative_ci_low']):.2f}%, "
                 f"{100.0 * float(summary['relative_ci_high']):.2f}%]"

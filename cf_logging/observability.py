@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 import math
 import time
 
@@ -197,7 +197,7 @@ class EnergyBudgetTracker:
         try:
             # Alignment and drift relative to reference etas
             ref_etas = None
-            if isinstance(coord.constraints, dict):
+            if isinstance(coord.constraints, Mapping):
                 ref_etas = coord.constraints.get("reference_etas", None)
             if isinstance(ref_etas, list) and len(ref_etas) == len(etas):
                 align = InformationMetrics.compute_alignment(etas, ref_etas)
@@ -209,7 +209,7 @@ class EnergyBudgetTracker:
             pass
         try:
             # Constraint violation rate if counts are supplied in constraints
-            if isinstance(coord.constraints, dict):
+            if isinstance(coord.constraints, Mapping):
                 v = coord.constraints.get("constraint_violation_count", None)
                 t = coord.constraints.get("total_constraints_checked", None)
                 if isinstance(v, (int, float)) and isinstance(t, (int, float)):
@@ -234,14 +234,20 @@ class EnergyBudgetTracker:
             # Best-effort; skip if metrics fail
             pass
         # Stability/backtracks (if available)
-        margin = getattr(coord, "_last_contraction_margin", None)
+        slack = getattr(coord, "_last_step_cap_slack", None)
+        if slack is None:
+            slack = getattr(coord, "_last_contraction_margin", None)
         last_bk = getattr(coord, "_last_step_backtracks", None)
         total_bk = getattr(coord, "_total_backtracks", None)
-        if margin is not None:
-            row["contraction_margin"] = float(margin)
-            if self.warn_on_margin_shrink and float(margin) < float(self.margin_warn_threshold):
+        if slack is not None:
+            row["step_cap_slack"] = float(slack)
+            # Deprecated compatibility field for existing log consumers.
+            row["contraction_margin"] = float(slack)
+            if self.warn_on_margin_shrink and float(slack) < float(self.margin_warn_threshold):
+                row["step_cap_slack_warn"] = 1
                 row["margin_warn"] = 1
             else:
+                row["step_cap_slack_warn"] = 0
                 row["margin_warn"] = 0
         # Backtrack counts
         if last_bk is not None:

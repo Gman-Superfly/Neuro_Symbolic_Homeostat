@@ -31,6 +31,8 @@ class ExecutionConfig:
     use_vectorized_quadratic: bool = True
     use_vectorized_hinges: bool = True
     use_vectorized_gate_benefits: bool = True
+    # Retained for configuration compatibility; correctness requires the full
+    # finite-difference gradient to include isolated local objectives.
     neighbor_gradients_only: bool = True
     enforce_invariants: bool = True
 
@@ -39,6 +41,8 @@ class ExecutionConfig:
 class GuardConfig:
     stability_guard: bool = True
     stability_cap_fraction: float = 0.9
+    log_step_cap_slack: bool = False
+    # Deprecated name retained for configuration compatibility.
     log_contraction_margin: bool = False
     warn_on_margin_shrink: bool = False
     margin_warn_threshold: float = 1e-6
@@ -120,6 +124,7 @@ class CoordinatorConfig:
             "enforce_invariants": self.execution.enforce_invariants,
             "stability_guard": self.guards.stability_guard,
             "stability_cap_fraction": self.guards.stability_cap_fraction,
+            "log_step_cap_slack": self.guards.log_step_cap_slack,
             "log_contraction_margin": self.guards.log_contraction_margin,
             "warn_on_margin_shrink": self.guards.warn_on_margin_shrink,
             "margin_warn_threshold": self.guards.margin_warn_threshold,

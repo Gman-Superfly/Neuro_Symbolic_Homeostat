@@ -9,7 +9,7 @@ import numpy as np
 from .energy import project_noise_metric_orthogonal, project_noise_orthogonal
 from .noise_controller import PrecisionNoiseController
 
-__all__ = ["resolved_noise_mode", "build_noise_vector"]
+__all__ = ["apply_box_feasible_noise", "build_noise_vector", "resolved_noise_mode"]
 
 
 def resolved_noise_mode(coordinator: Any) -> str:
@@ -87,3 +87,32 @@ def build_noise_vector(
     if noise_norm <= 1e-9:
         return np.zeros_like(grad_vector)
     return noise_vector * (current_noise_mag / noise_norm)
+
+
+def apply_box_feasible_noise(
+    state: np.ndarray | list[float],
+    noise: np.ndarray,
+) -> np.ndarray:
+    """Apply the largest uniform noise scaling that remains in the unit box.
+
+    Uniform scaling preserves any first-order orthogonality established by the
+    noise builder. Per-coordinate clipping would generally destroy it.
+    """
+    values = np.asarray(state, dtype=float)
+    direction = np.asarray(noise, dtype=float)
+    if values.shape != direction.shape:
+        raise ValueError("state and noise must have matching shapes")
+    if not np.all(np.isfinite(values)) or not np.all(np.isfinite(direction)):
+        raise ValueError("state and noise must contain finite values")
+    if np.any(values < 0.0) or np.any(values > 1.0):
+        raise ValueError("state must lie in the closed unit box")
+
+    scale = 1.0
+    for value, component in zip(values, direction):
+        if component > 0.0:
+            scale = min(scale, float((1.0 - value) / component))
+        elif component < 0.0:
+            scale = min(scale, float(-value / component))
+    scale = max(0.0, min(1.0, scale))
+    proposal = values + scale * direction
+    return np.clip(proposal, 0.0, 1.0)

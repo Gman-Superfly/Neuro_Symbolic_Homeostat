@@ -51,7 +51,7 @@ def plot_cost_reductions(summary_path: Path, output_path: Path) -> None:
         )
     ax.axvline(0.0, color="#333333", linewidth=0.8)
     ax.set_yticks(y, [LABELS[name] for name in scenarios])
-    ax.set_xlabel("Paired curvature-cost reduction (%)")
+    ax.set_xlabel("Paired realized full-Hessian cost reduction (%)")
     ax.set_title("Precision-orthogonal noise across generated families")
     ax.legend(frameon=False)
     ax.grid(axis="x", alpha=0.2)

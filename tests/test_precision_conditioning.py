@@ -7,9 +7,9 @@ These tests validate two claims from the paper's relaxation mechanism:
    finite-difference window is clipped on one side, so the estimate must
    normalize by the actual window width rather than the nominal 2*eps.
 
-2. Dividing each coordinate's gradient by its diagonal curvature (the diagonal
-   natural-gradient step) converges in fewer iterations than plain gradient
-   descent when the curvature spread across coordinates is large.
+2. Dividing each coordinate's gradient by a positive diagonal preconditioner
+   converges in fewer iterations than plain gradient descent when the curvature
+   spread across coordinates is large.
 """
 
 from __future__ import annotations
@@ -19,11 +19,12 @@ from typing import Any, List, Mapping, Tuple
 
 import math
 import numpy as np
+import pytest
 
+import core.coordinator_stability as coordinator_stability
 from core.coordinator import EnergyCoordinator
 from core.couplings import DirectedHingeCoupling, QuadraticCoupling
 from core.interfaces import EnergyModule, OrderParameter, SupportsLocalEnergyGrad, SupportsPrecision
-from experiments.demo_constraint_correction import ProductExclusionCoupling, SumToOneCoupling, TargetScoreModule
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,132 @@ class UnderreportedQuadraticCoupling:
         return reported, reported, reported
 
 
+@dataclass(frozen=True)
+class UnreportedQuadraticCoupling:
+    """Custom edge that deliberately omits the curvature protocol."""
+
+    weight: float
+
+    def coupling_energy(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> float:
+        del constraints
+        diff = float(eta_i) - float(eta_j)
+        return self.weight * diff * diff
+
+    def d_coupling_energy_d_etas(
+        self,
+        eta_i: OrderParameter,
+        eta_j: OrderParameter,
+        constraints: Mapping[str, Any],
+    ) -> Tuple[float, float]:
+        del constraints
+        grad = 2.0 * self.weight * (float(eta_i) - float(eta_j))
+        return grad, -grad
+
+
+@pytest.mark.parametrize("invalid_weight", [-1.0, math.nan])
+def test_invalid_custom_curvature_bounds_fail_closed(invalid_weight: float) -> None:
+    coordinator = EnergyCoordinator(
+        modules=[QuadraticModule(0.5, 1.0), QuadraticModule(0.5, 1.0)],
+        couplings=[
+            (
+                0,
+                1,
+                ScaledQuadraticCoupling(
+                    weight=invalid_weight,
+                    scale_i=1.0,
+                    scale_j=1.0,
+                ),
+            )
+        ],
+        constraints={},
+    )
+
+    with pytest.raises(ValueError, match="non-negative and not NaN"):
+        coordinator.inspect_state([0.4, 0.6])
+
+
+def test_infinite_custom_curvature_requires_line_search_for_guarded_update() -> None:
+    coordinator = EnergyCoordinator(
+        modules=[QuadraticModule(0.5, 1.0), QuadraticModule(0.5, 1.0)],
+        couplings=[
+            (
+                0,
+                1,
+                UnderreportedQuadraticCoupling(
+                    weight=1.0,
+                    report_fraction=math.inf,
+                ),
+            )
+        ],
+        constraints={},
+        use_precision_preconditioning=False,
+        stability_guard=True,
+        line_search=False,
+    )
+
+    with pytest.raises(ValueError, match="curvature bound is infinite"):
+        coordinator.relax_etas([0.4, 0.6], steps=1)
+
+
+def test_missing_custom_curvature_report_requires_line_search_for_guarded_update() -> None:
+    fixed_step = EnergyCoordinator(
+        modules=[QuadraticModule(0.5, 1.0), QuadraticModule(0.5, 1.0)],
+        couplings=[(0, 1, UnreportedQuadraticCoupling(weight=1.0))],
+        constraints={},
+        use_precision_preconditioning=False,
+        stability_guard=True,
+        line_search=False,
+    )
+
+    assert math.isinf(fixed_step.inspect_state([0.4, 0.6]).update_lipschitz_bound)
+    with pytest.raises(ValueError, match="curvature bound is infinite"):
+        fixed_step.relax_etas([0.4, 0.6], steps=1)
+
+    searched = EnergyCoordinator(
+        modules=[QuadraticModule(0.5, 1.0), QuadraticModule(0.5, 1.0)],
+        couplings=[(0, 1, UnreportedQuadraticCoupling(weight=1.0))],
+        constraints={},
+        use_precision_preconditioning=False,
+        stability_guard=True,
+        line_search=True,
+    )
+    result = searched.relax_etas([0.4, 0.6], steps=1)
+
+    assert all(math.isfinite(value) for value in result)
+    assert searched.last_relaxation_metrics()["accepted_steps"] == 1
+
+
+def test_precision_cache_uses_nonnegative_curvature_magnitude_for_signed_term_weight() -> None:
+    coordinator = EnergyCoordinator(
+        modules=[QuadraticModule(0.5, 2.0)],
+        couplings=[],
+        constraints={"term_weights": {"local:QuadraticModule": -3.0}},
+        use_precision_preconditioning=True,
+    )
+
+    snapshot = coordinator.inspect_state([0.4])
+
+    assert snapshot.precision_diagonal == (6.0,)
+    assert snapshot.preconditioner_diagonal == (6.0,)
+
+
+@pytest.mark.parametrize("invalid_weight", [math.nan, math.inf, -math.inf])
+def test_nonfinite_term_weight_fails_closed(invalid_weight: float) -> None:
+    coordinator = EnergyCoordinator(
+        modules=[QuadraticModule(0.5, 2.0)],
+        couplings=[],
+        constraints={"term_weights": {"local:QuadraticModule": invalid_weight}},
+    )
+
+    with pytest.raises(ValueError, match="term weight .* must be finite"):
+        coordinator.inspect_state([0.4])
+
+
 def _iters_to_converge(
     targets: List[float],
     stiffness: List[float],
@@ -219,6 +346,8 @@ def test_composed_gershgorin_bound_covers_random_quadratic_graph_hessians() -> N
             use_analytic=True,
             noise_mode="none",
             stability_guard=True,
+            use_stiffness_updates=False,
+            use_precision_preconditioning=False,
         )
         state = [float(value) for value in rng.uniform(0.0, 1.0, size=size)]
         estimate = float(coord._estimate_lipschitz_bound(state))  # type: ignore[attr-defined]
@@ -230,8 +359,250 @@ def test_composed_gershgorin_bound_covers_random_quadratic_graph_hessians() -> N
         assert spectral_radius < 1.0
 
 
+def test_preconditioned_gershgorin_bound_controls_implemented_iteration() -> None:
+    """The guarded matrix must be the matrix used by the preconditioned update."""
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        size = int(rng.integers(3, 10))
+        stiffness = rng.uniform(0.1, 3.0, size=size)
+        modules = [QuadraticModule(target=float(rng.uniform()), stiffness=float(value)) for value in stiffness]
+        couplings = []
+        hessian = np.diag(stiffness)
+        for i in range(size):
+            for j in range(i + 1, size):
+                if rng.uniform() > 0.45:
+                    continue
+                weight = float(rng.uniform(0.05, 1.5))
+                couplings.append((i, j, QuadraticCoupling(weight=weight)))
+                hessian[i, i] += 2.0 * weight
+                hessian[j, j] += 2.0 * weight
+                hessian[i, j] -= 2.0 * weight
+                hessian[j, i] -= 2.0 * weight
+
+        coord = EnergyCoordinator(
+            modules=modules,
+            couplings=couplings,
+            constraints={},
+            use_analytic=True,
+            noise_mode="none",
+            stability_guard=True,
+            use_precision_preconditioning=True,
+            precision_epsilon=1e-12,
+        )
+        state = [float(value) for value in rng.uniform(0.0, 1.0, size=size)]
+        precision = rng.uniform(0.05, 5.0, size=size)
+        estimate = float(coordinator_stability.estimate_preconditioned_lipschitz_bound(coord, state, precision))
+        normalized_hessian = hessian / np.sqrt(np.outer(precision, precision))
+        lambda_max = float(np.max(np.linalg.eigvalsh(normalized_hessian)))
+
+        assert estimate + 1e-8 >= lambda_max
+        alpha = 0.9 * 2.0 / estimate
+        iteration = np.eye(size) - alpha * (hessian / precision[:, None])
+        spectral_radius = float(np.max(np.abs(np.linalg.eigvals(iteration))))
+        assert spectral_radius < 1.0
+
+
+@pytest.mark.parametrize("use_stiffness_updates", [False, True])
+def test_small_curvature_preconditioned_counterexample_contracts_without_rejection(
+    use_stiffness_updates: bool,
+) -> None:
+    """Regression for H=P=0.1, where a raw-Hessian 2/L cap overshoots."""
+    coord = EnergyCoordinator(
+        modules=[QuadraticModule(target=0.5, stiffness=0.1)],
+        couplings=[],
+        constraints={},
+        use_analytic=True,
+        use_stiffness_updates=use_stiffness_updates,
+        use_precision_preconditioning=not use_stiffness_updates,
+        stiffness_epsilon=1e-12,
+        precision_epsilon=1e-12,
+        stability_guard=True,
+        auto_step_from_lipschitz=True,
+        stability_cap_fraction=0.9,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+    initial = [0.6]
+    initial_energy = float(coord.energy(initial))
+
+    output = coord.relax_etas(initial, steps=1)
+
+    assert getattr(coord, "_rejected_steps") == 0
+    assert math.isclose(output[0], 0.42, rel_tol=0.0, abs_tol=1e-10)
+    assert coord.energy(output) < initial_energy
+
+
+@pytest.mark.parametrize("use_stiffness_updates", [False, True])
+def test_guard_covers_step_that_crosses_inactive_hinge_boundary(
+    use_stiffness_updates: bool,
+) -> None:
+    """The bound includes possible hinge curvature beyond the starting active set."""
+    coord = EnergyCoordinator(
+        modules=[
+            QuadraticModule(target=0.0, stiffness=0.1),
+            QuadraticModule(target=1.0, stiffness=0.1),
+        ],
+        couplings=[(0, 1, DirectedHingeCoupling(weight=8.0))],
+        constraints={},
+        use_analytic=True,
+        use_stiffness_updates=use_stiffness_updates,
+        use_precision_preconditioning=not use_stiffness_updates,
+        stiffness_epsilon=1e-12,
+        precision_epsilon=1e-12,
+        stability_guard=True,
+        auto_step_from_lipschitz=True,
+        stability_cap_fraction=0.9,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+    initial = [0.5, 0.5]
+    initial_energy = float(coord.energy(initial))
+
+    output = coord.relax_etas(initial, steps=1)
+
+    assert output[0] < initial[0]
+    assert output[1] > initial[1]
+    assert coord.energy(output) < initial_energy
+    assert getattr(coord, "_rejected_steps") == 0
+
+
+@pytest.mark.parametrize("use_stiffness_updates", [False, True])
+def test_projected_armijo_uses_raw_gradient_with_preconditioned_direction(
+    use_stiffness_updates: bool,
+) -> None:
+    coord = EnergyCoordinator(
+        modules=[QuadraticModule(target=0.5, stiffness=0.1)],
+        couplings=[],
+        constraints={},
+        use_analytic=True,
+        use_stiffness_updates=use_stiffness_updates,
+        use_precision_preconditioning=not use_stiffness_updates,
+        stiffness_epsilon=1e-12,
+        precision_epsilon=1e-12,
+        stability_guard=False,
+        line_search=True,
+        armijo_c=0.5,
+        step_size=0.5,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+
+    output = coord.relax_etas([0.6], steps=1)
+
+    assert math.isclose(output[0], 0.55, rel_tol=0.0, abs_tol=1e-12)
+    assert getattr(coord, "_last_acceptance_reason") == "armijo_accepted"
+    assert getattr(coord, "_last_step_backtracks") == 0
+
+
+@pytest.mark.parametrize("use_stiffness_updates", [False, True])
+def test_projected_armijo_accepts_constrained_stationary_noop(
+    use_stiffness_updates: bool,
+) -> None:
+    coord = EnergyCoordinator(
+        modules=[QuadraticModule(target=-0.2, stiffness=0.1)],
+        couplings=[],
+        constraints={},
+        use_analytic=True,
+        use_stiffness_updates=use_stiffness_updates,
+        use_precision_preconditioning=not use_stiffness_updates,
+        stiffness_epsilon=1e-12,
+        precision_epsilon=1e-12,
+        stability_guard=False,
+        line_search=True,
+        step_size=0.5,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+
+    output = coord.relax_etas([0.0], steps=1)
+
+    assert output == [0.0]
+    assert getattr(coord, "_last_acceptance_reason") == "armijo_accepted"
+    assert getattr(coord, "_last_step_backtracks") == 0
+    assert coord.last_relaxation_metrics()["accepted_steps"] == 1
+
+
+@pytest.mark.parametrize("use_stiffness_updates", [False, True])
+def test_projected_armijo_exhaustion_is_a_rejected_no_step(
+    use_stiffness_updates: bool,
+) -> None:
+    coord = EnergyCoordinator(
+        modules=[QuadraticModule(target=0.5, stiffness=0.1)],
+        couplings=[],
+        constraints={},
+        use_analytic=True,
+        use_stiffness_updates=use_stiffness_updates,
+        use_precision_preconditioning=not use_stiffness_updates,
+        stiffness_epsilon=1e-12,
+        precision_epsilon=1e-12,
+        stability_guard=False,
+        line_search=True,
+        armijo_c=0.9,
+        max_backtrack=0,
+        step_size=0.5,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+
+    output = coord.relax_etas([0.6], steps=1)
+    metrics = coord.last_relaxation_metrics()
+
+    assert output == [0.6]
+    assert getattr(coord, "_last_acceptance_reason") == "armijo_failed_no_step"
+    assert getattr(coord, "_last_step_backtracks") == 0
+    assert metrics["accepted_steps"] == 0
+    assert metrics["rejected_steps"] == 1
+    assert metrics["last_acceptance_reason"] == "armijo_failed_no_step"
+    assert metrics["acceptance_reasons"] == ["armijo_failed_no_step"]
+
+
+@pytest.mark.parametrize("use_stiffness_updates", [False, True])
+@pytest.mark.parametrize("curvature,epsilon,scale", [(0.1, 1e-12, 100.0), (0.1, 0.2, 10.0)])
+def test_preconditioned_guard_is_invariant_to_joint_curvature_scaling(
+    use_stiffness_updates: bool,
+    curvature: float,
+    epsilon: float,
+    scale: float,
+) -> None:
+    """Scaling H and P together must not change the dimensionless trajectory."""
+
+    def one_step(local_curvature: float, floor: float) -> tuple[float, int, float, float]:
+        coord = EnergyCoordinator(
+            modules=[QuadraticModule(target=0.5, stiffness=local_curvature)],
+            couplings=[],
+            constraints={},
+            use_analytic=True,
+            use_stiffness_updates=use_stiffness_updates,
+            use_precision_preconditioning=not use_stiffness_updates,
+            stiffness_epsilon=floor,
+            precision_epsilon=floor,
+            stability_guard=True,
+            auto_step_from_lipschitz=True,
+            stability_cap_fraction=0.9,
+            noise_mode="none",
+            enable_orthogonal_noise=False,
+        )
+        snapshot = coord.inspect_state([0.6])
+        output = coord.relax_etas([0.6], steps=1)
+        return (
+            float(output[0]),
+            int(getattr(coord, "_rejected_steps")),
+            float(snapshot.update_lipschitz_bound),
+            float(snapshot.preconditioner_diagonal[0]),
+        )
+
+    base = one_step(curvature, epsilon)
+    scaled = one_step(scale * curvature, scale * epsilon)
+
+    assert base[1] == 0
+    assert scaled[1] == 0
+    assert math.isclose(base[0], scaled[0], rel_tol=0.0, abs_tol=1e-10)
+    assert math.isclose(base[2], scaled[2], rel_tol=0.0, abs_tol=1e-10)
+    assert math.isclose(scaled[3], scale * base[3], rel_tol=0.0, abs_tol=1e-10)
+
+
 def test_custom_coupling_curvature_protocol_composes_end_to_end() -> None:
-    custom = ScaledQuadraticCoupling(weight=1.7, scale_i=1.3, scale_j=0.6)
+    custom = ScaledQuadraticCoupling(weight=1.7, scale_i=1.3, scale_j=-0.6)
     modules = [QuadraticModule(target=0.2, stiffness=0.8), QuadraticModule(target=0.7, stiffness=1.1)]
     coord = EnergyCoordinator(
         modules=modules,
@@ -253,8 +624,18 @@ def test_custom_coupling_curvature_protocol_composes_end_to_end() -> None:
     estimate = float(coord._estimate_lipschitz_bound(state))  # type: ignore[attr-defined]
     coord._update_precision_cache(state)  # type: ignore[attr-defined]
     precision = np.asarray(coord.get_precision_diagonal(), dtype=float)
+    independent_precision = np.asarray([0.7, 3.2], dtype=float)
+    normalized_estimate = float(
+        coordinator_stability.estimate_preconditioned_lipschitz_bound(
+            coord,
+            state,
+            independent_precision,
+        )
+    )
+    normalized_hessian = hessian / np.sqrt(np.outer(independent_precision, independent_precision))
 
     assert estimate + 1e-8 >= float(np.max(np.linalg.eigvalsh(hessian)))
+    assert normalized_estimate + 1e-8 >= float(np.max(np.linalg.eigvalsh(normalized_hessian)))
     assert np.allclose(precision, np.diag(hessian), rtol=0.0, atol=1e-10)
     result = coord.relax_etas(state, steps=20)
     assert coord.energy(result) <= coord.energy(state)
@@ -264,8 +645,8 @@ def test_preconditioning_converges_faster_on_ill_conditioned_problem() -> None:
     """Diagonal preconditioning beats plain gradient descent under large curvature spread.
 
     The energy is uncoupled, so the curvature is diagonal and axis-aligned, which
-    is the regime where diagonal preconditioning is expected to help. Both runs use
-    the identical Lipschitz-derived step; only the per-coordinate scaling differs.
+    is the regime where diagonal preconditioning is expected to help. Each run uses
+    the Lipschitz bound for its own implemented iteration matrix.
     """
     targets = [0.5, 0.5, 0.5]
     stiffness = [100.0, 1.0, 0.1]  # condition number 1000
@@ -311,6 +692,44 @@ def _coupled_pair(precondition: bool, guard: bool, step: float) -> EnergyCoordin
     )
 
 
+@pytest.mark.parametrize("use_stiffness_updates", [False, True])
+def test_guarded_coupled_step_matches_preconditioned_matrix_and_contracts_p_norm(
+    use_stiffness_updates: bool,
+) -> None:
+    modules = [QuadraticModule(target=0.2, stiffness=1.0), QuadraticModule(target=0.8, stiffness=1.0)]
+    coord = EnergyCoordinator(
+        modules=modules,
+        couplings=[(0, 1, QuadraticCoupling(weight=8.0))],
+        constraints={},
+        use_analytic=True,
+        use_stiffness_updates=use_stiffness_updates,
+        use_precision_preconditioning=not use_stiffness_updates,
+        stiffness_epsilon=1e-12,
+        precision_epsilon=1e-12,
+        stability_guard=True,
+        auto_step_from_lipschitz=True,
+        stability_cap_fraction=0.9,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+    initial = np.asarray([0.55, 0.45], dtype=float)
+    hessian = np.asarray([[17.0, -16.0], [-16.0, 17.0]], dtype=float)
+    linear = np.asarray([0.2, 0.8], dtype=float)
+    optimum = np.linalg.solve(hessian, linear)
+    snapshot = coord.inspect_state(initial.tolist())
+    precision = np.asarray(snapshot.preconditioner_diagonal, dtype=float)
+    alpha = 0.9 * 2.0 / snapshot.update_lipschitz_bound
+    expected = np.clip(initial - alpha * ((hessian @ initial - linear) / precision), 0.0, 1.0)
+
+    output = np.asarray(coord.relax_etas(initial.tolist(), steps=1), dtype=float)
+    error_before = float(np.sqrt(np.sum(precision * (initial - optimum) ** 2)))
+    error_after = float(np.sqrt(np.sum(precision * (output - optimum) ** 2)))
+
+    assert np.allclose(output, expected, rtol=0.0, atol=1e-12)
+    assert error_after < error_before
+    assert getattr(coord, "_rejected_steps") == 0
+
+
 def test_curvature_awareness_converges_where_plain_gd_stalls_above_2_over_L() -> None:
     """Curvature handling keeps an aggressive step safe where plain GD stalls.
 
@@ -346,59 +765,48 @@ def test_curvature_awareness_converges_where_plain_gd_stalls_above_2_over_L() ->
         assert abs(out[0] - out[1]) < 0.1
 
 
-def test_gershgorin_cap_can_be_conservative_on_mixed_preconditioned_problem() -> None:
-    """Mixed constraints can converge above the initial conservative cap.
+def test_preconditioned_gershgorin_cap_is_a_conservative_certificate() -> None:
+    """A stable step can exist above the sufficient normalized row-sum cap."""
+    modules = [QuadraticModule(target=0.5, stiffness=1.0) for _ in range(3)]
+    couplings = [
+        (0, 1, QuadraticCoupling(weight=1.0)),
+        (1, 2, QuadraticCoupling(weight=1.0)),
+    ]
+    coord = EnergyCoordinator(
+        modules=modules,
+        couplings=couplings,
+        constraints={},
+        use_analytic=True,
+        use_stiffness_updates=False,
+        use_precision_preconditioning=True,
+        precision_epsilon=1e-12,
+        stability_guard=True,
+        noise_mode="none",
+        enable_orthogonal_noise=False,
+    )
+    state = [0.2, 0.5, 0.8]
+    hessian = np.array(
+        [
+            [3.0, -2.0, 0.0],
+            [-2.0, 5.0, -2.0],
+            [0.0, -2.0, 3.0],
+        ],
+        dtype=float,
+    )
+    coord._update_precision_cache(state)  # type: ignore[attr-defined]
+    precision = np.asarray(coord.get_precision_diagonal(), dtype=float)
+    estimate = float(
+        coordinator_stability.estimate_preconditioned_lipschitz_bound(coord, state, precision)
+    )
+    normalized_hessian = hessian / np.sqrt(np.outer(precision, precision))
+    exact_largest = float(np.max(np.linalg.eigvalsh(normalized_hessian)))
+    alpha = 0.5 * ((2.0 / estimate) + (2.0 / exact_largest))
+    iteration = np.eye(3) - alpha * (hessian / precision[:, None])
 
-    This test records an observed boundary for the current implementation:
-    the initial Gershgorin cap can be lower than what still converges on a
-    mixed hinge and product-coupling problem. This does not weaken safety.
-    It documents that the bound can be conservative, so speed impact is
-    problem dependent.
-    """
-    raw = [0.82, 0.71, 0.25, 0.68]
-    requested_step = 0.1
-
-    def _build(guard: bool) -> EnergyCoordinator:
-        modules = [TargetScoreModule(target=value, stiffness=0.25) for value in raw]
-        couplings = [
-            (0, 1, SumToOneCoupling(weight=12.0)),
-            (0, 1, ProductExclusionCoupling(weight=2.0)),
-            (2, 3, DirectedHingeCoupling(weight=8.0)),
-        ]
-        return EnergyCoordinator(
-            modules=modules,
-            couplings=couplings,
-            constraints={},
-            use_analytic=True,
-            use_stiffness_updates=False,
-            use_precision_preconditioning=True,
-            stability_guard=guard,
-            auto_step_from_lipschitz=guard,
-            noise_mode="none",
-            enable_orthogonal_noise=False,
-            step_size=requested_step,
-            assert_monotonic_energy=False,
-        )
-
-    probe = _build(guard=True)
-    l_init = float(probe._estimate_lipschitz_bound(list(raw)))  # type: ignore[attr-defined]
-    assert l_init > 0.0
-    safe_cap = 0.9 * 2.0 / l_init
-    assert requested_step > safe_cap
-
-    no_guard = _build(guard=False)
-    guarded = _build(guard=True)
-    energy0 = float(no_guard.energy(list(raw)))
-    out_no_guard = [float(value) for value in no_guard.relax_etas(list(raw), steps=500)]
-    out_guarded = [float(value) for value in guarded.relax_etas(list(raw), steps=500)]
-    energy_no_guard = float(no_guard.energy(out_no_guard))
-    energy_guarded = float(guarded.energy(out_guarded))
-
-    assert energy_no_guard < energy0
-    assert energy_guarded < energy0
-    assert getattr(no_guard, "_rejected_steps") == 0
-    assert getattr(guarded, "_rejected_steps") == 0
-    assert energy_no_guard <= energy_guarded
+    assert estimate > exact_largest
+    assert alpha > 2.0 / estimate
+    assert alpha < 2.0 / exact_largest
+    assert float(np.max(np.abs(np.linalg.eigvals(iteration)))) < 1.0
 
 
 def test_underreported_custom_curvature_is_caught_by_monotone_restoration() -> None:

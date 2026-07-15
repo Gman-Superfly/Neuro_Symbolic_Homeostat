@@ -26,6 +26,8 @@ def test_public_snapshot_and_noise_vector_expose_experiment_diagnostics() -> Non
     assert np.allclose(snapshot.gradient, (1.0, -2.0), rtol=0.0, atol=1e-12)
     assert np.allclose(snapshot.precision_diagonal, (2.0, 4.0), rtol=0.0, atol=1e-12)
     assert snapshot.lipschitz_bound >= 4.0
+    assert np.allclose(snapshot.preconditioner_diagonal, (2.0, 4.0), rtol=0.0, atol=1e-12)
+    assert np.isclose(snapshot.update_lipschitz_bound, 1.0, rtol=0.0, atol=1e-9)
 
     noise = coord.build_noise_vector(np.array([0.3, 0.9]), np.asarray(snapshot.gradient))
     assert np.isclose(np.linalg.norm(noise), 0.02)

@@ -7,9 +7,10 @@ from typing import Any, List
 import numpy as np
 
 from .couplings import AsymmetricHingeCoupling, DirectedHingeCoupling, QuadraticCoupling
+from .coordinator_stability import validate_curvature_bound_triplet
 from .interfaces import OrderParameter, SupportsCouplingCurvature, SupportsPrecision
 
-__all__ = ["update_precision_cache", "get_precision_diagonal"]
+__all__ = ["update_precision_cache", "get_precision_diagonal", "get_update_preconditioner"]
 
 
 def update_precision_cache(coordinator: Any, etas: List[OrderParameter]) -> None:
@@ -28,7 +29,7 @@ def update_precision_cache(coordinator: Any, etas: List[OrderParameter]) -> None
         else:
             curv = 0.0
         if w_loc != 0.0 and curv != 0.0:
-            diag[idx] += w_loc * curv
+            diag[idx] += abs(w_loc) * curv
 
     for i, j, coupling in coordinator.couplings:
         key = f"coup:{coupling.__class__.__name__}"
@@ -36,7 +37,7 @@ def update_precision_cache(coordinator: Any, etas: List[OrderParameter]) -> None
         if w_eff == 0.0:
             continue
         if isinstance(coupling, QuadraticCoupling):
-            w = float(getattr(coupling, "weight", 0.0)) * w_eff
+            w = abs(float(getattr(coupling, "weight", 0.0)) * w_eff)
             add = 2.0 * w
             if add != 0.0:
                 if 0 <= i < n:
@@ -44,7 +45,7 @@ def update_precision_cache(coordinator: Any, etas: List[OrderParameter]) -> None
                 if 0 <= j < n:
                     diag[j] += add
         elif isinstance(coupling, DirectedHingeCoupling):
-            w = float(getattr(coupling, "weight", 0.0)) * w_eff
+            w = abs(float(getattr(coupling, "weight", 0.0)) * w_eff)
             gap = float(etas[j]) - float(etas[i])
             if w != 0.0 and gap > 0.0:
                 add = 2.0 * w
@@ -53,7 +54,7 @@ def update_precision_cache(coordinator: Any, etas: List[OrderParameter]) -> None
                 if 0 <= j < n:
                     diag[j] += add
         elif isinstance(coupling, AsymmetricHingeCoupling):
-            w = float(getattr(coupling, "weight", 0.0)) * w_eff
+            w = abs(float(getattr(coupling, "weight", 0.0)) * w_eff)
             alpha = float(getattr(coupling, "alpha_i", 1.0))
             beta = float(getattr(coupling, "beta_j", 1.0))
             gap = beta * float(etas[j]) - alpha * float(etas[i])
@@ -65,11 +66,18 @@ def update_precision_cache(coordinator: Any, etas: List[OrderParameter]) -> None
                 if 0 <= j < n:
                     diag[j] += add_j
         elif isinstance(coupling, SupportsCouplingCurvature):
-            diag_i, diag_j, _ = coupling.coupling_curvature_bounds(float(etas[i]), float(etas[j]), coordinator.constraints)
-            if 0 <= i < n:
-                diag[i] += w_eff * max(0.0, float(diag_i))
-            if 0 <= j < n:
-                diag[j] += w_eff * max(0.0, float(diag_j))
+            diag_i, diag_j, _ = validate_curvature_bound_triplet(
+                coupling.coupling_curvature_bounds(
+                    float(etas[i]),
+                    float(etas[j]),
+                    coordinator.constraints,
+                )
+            )
+            weight_scale = abs(w_eff)
+            if 0 <= i < n and np.isfinite(diag_i):
+                diag[i] += weight_scale * diag_i
+            if 0 <= j < n and np.isfinite(diag_j):
+                diag[j] += weight_scale * diag_j
 
     coordinator._precision_cache = {int(idx): float(val) for idx, val in enumerate(diag)}  # noqa: SLF001
 
@@ -79,3 +87,16 @@ def get_precision_diagonal(coordinator: Any) -> List[float]:
     if coordinator._precision_cache is None:  # noqa: SLF001
         return [0.0] * len(coordinator.modules)
     return [coordinator._precision_cache.get(i, 0.0) for i in range(len(coordinator.modules))]  # noqa: SLF001
+
+
+def get_update_preconditioner(coordinator: Any) -> List[float]:
+    """Return the positive diagonal used by every preconditioned update path."""
+    epsilon = (
+        float(coordinator.stiffness_epsilon)
+        if coordinator.use_stiffness_updates
+        else float(coordinator.precision_epsilon)
+    )
+    if not np.isfinite(epsilon) or epsilon <= 0.0:
+        raise ValueError("the active preconditioner epsilon must be finite and positive")
+    curvature = np.maximum(0.0, np.asarray(get_precision_diagonal(coordinator), dtype=float))
+    return np.maximum(epsilon, curvature).tolist()
