@@ -344,8 +344,6 @@ The escape benchmark uses one asymmetric double-well coordinate and seven stiff 
 
 The paired escape-rate difference for precision-orthogonal noise versus no noise was 33.0 percentage points with a percentile 95% bootstrap interval of [26.5, 39.5]. The same interval applies versus isotropic noise because that baseline had no escapes. This result supports escape behavior only for this controlled anisotropic construction. At the initial stationary point the gradient is zero, so orthogonality is vacuous; the observed difference isolates precision allocation rather than tangent projection.
 
-![Controlled anisotropic double-well escape](docs/figures/pson_escape_rate.png)
-
 ### 7.4 Local runtime scaling
 
 The scaling benchmark varies problem size over 16, 64, and 256 variables and edge count from 16 to 4,096. Each graph regime runs in a fresh Python process with two warmups and seven timed repeats. Median relaxation time ranged from 0.846 ms per step at 16 variables and 16 edges, with an interquartile range of 0.805 to 0.896 ms, to 48.141 ms at 256 variables and 4,096 edges, with an interquartile range of 47.275 to 51.679 ms. Peak traced Python allocation ranged from 20.7 KiB to 1.16 MiB; this `tracemalloc` measurement does not include every native allocation or process-level resident byte.
@@ -436,11 +434,9 @@ Theory references:
 
 ### Citation
 
-If you use this repository in your research, please cite it. This is ongoing work; we would like to know your opinions and experiments. Thank you.
+If you use this repository in your research, we love you, thanks.
 
 **Authors:** Oscar Goldman - Shogu Research Group @ Datamutant.ai, subsidiary of 温心重工業.
-
-**Reference (author-year format):** Goldman, O. (2025). *Complexity from Constraints: The Neuro-Symbolic Homeostat*. Software repository. Shogu Research Group @ Datamutant.ai, subsidiary of 温心重工業.
 
 
 ---
