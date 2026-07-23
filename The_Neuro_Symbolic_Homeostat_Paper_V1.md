@@ -32,7 +32,7 @@ This paper separates mechanism validity, guard behavior, and empirical benefit. 
 - Ordinary-gradient stability: for a quadratic objective with SPD Hessian $H$, the box-projected map contracts in the Euclidean norm when a valid raw bound gives $0<\alpha<2/L_H$.
 - Preconditioned stability: for the executed update $x^+=\Pi_{[0,1]^n}(x-\alpha P^{-1}\nabla F(x))$, the bound is formed from $A=P^{-1/2}HP^{-1/2}$ using the exact positive diagonal $P$ used by the update. If $0<\alpha<2/L_P$, then the projected map contracts in the $P$-norm for an SPD quadratic.
 - Small-Gain benefit: the current allocator spends a global estimated margin and reports row margins. Fewer steps or lower final energy depends on the task and remains empirical.
-- Stiffness/Jacobi validity: for quadratic/SPD systems with $P=D=\operatorname{diag}(H)$, synchronous stiffness updates are weighted Jacobi with relaxation parameter $\alpha$. Classical Jacobi is the case $\alpha=1$. Gaussian BP is a related message-passing solver for the same linear-inference problem; it is not implemented or tested here. Sequential Gauss-Seidel remains an algebraic reference and future scheduler target.
+- Stiffness/Jacobi validity: for quadratic/SPD systems with $P=D=\mathrm{diag}(H)$, synchronous stiffness updates are weighted Jacobi with relaxation parameter $\alpha$. Classical Jacobi is the case $\alpha=1$. Gaussian BP is a related message-passing solver for the same linear-inference problem; it is not implemented or tested here. Sequential Gauss-Seidel remains an algebraic reference and future scheduler target.
 
 ### 1.2 Scope of contribution and empirical regime boundary
 
@@ -108,7 +108,7 @@ Explicit sign check. From (Eq. 3), $\mathrm{sign}\big(\partial F/\partial \eta_{
 ### 2.4 Stability and the Gaussian linear-system link
 The guard distinguishes the raw Hessian from the update geometry. Ordinary box-projected gradient descent is controlled by $H$. A diagonal-preconditioned step is controlled by $A=P^{-1/2}HP^{-1/2}$, using the same positive diagonal $P$ that divides the gradient. For an SPD quadratic, a valid bound $L_P\ge\lambda_{\max}(A)$ and $0<\alpha<2/L_P$ make the box-projected map contractive in the $P$-norm.
 
-For a quadratic objective with SPD precision $J$, minimizing $F(x)=\tfrac{1}{2}x^\top Jx-h^\top x$ is equivalent to solving $Jx=h$. With $P=D=\operatorname{diag}(J)$, the implemented update $x\leftarrow x-\alpha D^{-1}(Jx-h)$ is weighted Jacobi; $\alpha=1$ gives classical Jacobi. Gaussian belief propagation is another distributed method for Gaussian inference and can recover the same mean when its message updates converge, subject to its own conditions. General GaBP also updates message precisions, so its transient iterations are not identified with the coordinator's weighted-Jacobi trajectory.
+For a quadratic objective with SPD precision $J$, minimizing $F(x)=\tfrac{1}{2}x^\top Jx-h^\top x$ is equivalent to solving $Jx=h$. With $P=D=\mathrm{diag}(J)$, the implemented update $x\leftarrow x-\alpha D^{-1}(Jx-h)$ is weighted Jacobi; $\alpha=1$ gives classical Jacobi. Gaussian belief propagation is another distributed method for Gaussian inference and can recover the same mean when its message updates converge, subject to its own conditions. General GaBP also updates message precisions, so its transient iterations are not identified with the coordinator's weighted-Jacobi trajectory.
 
 ---
 
@@ -315,7 +315,7 @@ These intervals quantify sampled seed and perturbation-draw variation under the 
 
 ### 7.1 Closed-form noise-cost reference
 
-For a three-dimensional diagonal quadratic with curvature $(2,4,16)$, a gradient aligned with the first coordinate, and fixed noise norm $0.02$, the expected isotropic cost is $\beta^2\operatorname{tr}(H)/3$. Orthogonal projection leaves a two-dimensional tangent plane with expected cost $\beta^2(4+16)/2$. In that plane, inverse-curvature weighting gives the weighted harmonic expression $\beta^2(4w_2+16w_3)/(w_2+w_3)$, where $w_i=(H_{ii}+\varepsilon)^{-1}$.
+For a three-dimensional diagonal quadratic with curvature $(2,4,16)$, a gradient aligned with the first coordinate, and fixed noise norm $0.02$, the expected isotropic cost is $\beta^2\mathrm{tr}(H)/3$. Orthogonal projection leaves a two-dimensional tangent plane with expected cost $\beta^2(4+16)/2$. In that plane, inverse-curvature weighting gives the weighted harmonic expression $\beta^2(4w_2+16w_3)/(w_2+w_3)$, where $w_i=(H_{ii}+\varepsilon)^{-1}$.
 
 | Mode | Analytic cost | Monte Carlo cost, 100,000 draws | Relative error |
 |---|---:|---:|---:|
@@ -390,7 +390,7 @@ Note: To enable stiffness‑based per‑coordinate updates in your own scripts, 
 
 ## 9. Limitations
 
-- The implemented stiffness path is weighted Jacobi for the stated quadratic/SPD system when $P=\operatorname{diag}(H)$; classical Jacobi additionally requires $\alpha=1$, an inactive epsilon floor, and no box-clipping change. Gaussian BP is related literature context, not an implemented solver path.
+- The implemented stiffness path is weighted Jacobi for the stated quadratic/SPD system when $P=\mathrm{diag}(H)$; classical Jacobi additionally requires $\alpha=1$, an inactive epsilon floor, and no box-clipping change. Gaussian BP is related literature context, not an implemented solver path.
 - Curvature underreporting or a start-point-only bound that fails along the proposal segment invalidates the fixed-step contraction premise. Projected Armijo can test shorter realized displacements. Monotone restoration prevents an uphill proposal from replacing accepted state, but it cannot recover a missing bound or guarantee progress.
 - Update preconditioning uses a positive diagonal approximation. The theorem controls the full Hessian through the normalized matrix $P^{-1/2}HP^{-1/2}$; it does not assume that $P$ diagonalizes $H$.
 - The controlled escape construction is designed to test anisotropic precision allocation and is not representative of arbitrary nonconvex landscapes.
