@@ -8,7 +8,7 @@
 
 ### Abstract
 
-We present a neuro-symbolic coordination framework that represents selected logical constraints as energy terms and computes constraint-conditioned order-parameter states by relaxation. The main mechanism is a composable curvature contract: modules report local stiffness, couplings report curvature bounds, and the coordinator composes those reports into precision-aware updates, geometry-matched step caps, and noise scaling. For the executed diagonal-preconditioned update, the guard bounds \(P^{-1/2}HP^{-1/2}\) using the exact positive diagonal \(P\) that divides the gradient. This gives a \(P\)-norm contraction theorem for box-projected relaxation on quadratic objectives with an SPD Hessian. Ordinary projected gradient descent retains a separate Euclidean theorem. The quadratic stiffness path is weighted Jacobi and reduces to classical Jacobi at relaxation parameter one. Gaussian belief propagation solves the same Gaussian linear-inference problem through explicit messages, but this repository does not implement GaBP or claim stepwise equivalence. Counterfactual gate-benefit couplings consume caller-supplied frozen benefit values, and precision-scaled orthogonal noise uses final re-projection plus uniform box-feasible scaling. Synthetic experiments measure their mechanism-level behavior; broader task-level benefits remain empirical.
+We present a neuro-symbolic coordination framework that represents selected logical constraints as energy terms and computes constraint-conditioned order-parameter states by relaxation. The main mechanism is a composable curvature contract: modules report local stiffness, couplings report curvature bounds, and the coordinator composes those reports into precision-aware updates, geometry-matched step caps, and noise scaling. For the executed diagonal-preconditioned update, the guard bounds $P^{-1/2}HP^{-1/2}$ using the exact positive diagonal $P$ that divides the gradient. This gives a $P$-norm contraction theorem for box-projected relaxation on quadratic objectives with an SPD Hessian. Ordinary projected gradient descent retains a separate Euclidean theorem. The quadratic stiffness path is weighted Jacobi and reduces to classical Jacobi at relaxation parameter one. Gaussian belief propagation solves the same Gaussian linear-inference problem through explicit messages, but this repository does not implement GaBP or claim stepwise equivalence. Counterfactual gate-benefit couplings consume caller-supplied frozen benefit values, and precision-scaled orthogonal noise uses final re-projection plus uniform box-feasible scaling. Synthetic experiments measure their mechanism-level behavior; broader task-level benefits remain empirical.
 
 ---
 
@@ -42,7 +42,7 @@ This repository uses standard optimization mathematics:
 - diagonal preconditioning and weighted-Jacobi stationary iterations for quadratic/SPD blocks.
 
 The repository-specific contribution is the composable curvature contract, with two distinct local curvature paths:
-- module `SupportsPrecision.curvature` values feed the diagonal precision cache, the update preconditioner \(P\), and precision-aware noise;
+- module `SupportsPrecision.curvature` values feed the diagonal precision cache, the update preconditioner $P$, and precision-aware noise;
 - local Hessian contributions for the raw and normalized Gershgorin bounds are independently finite-differenced from local gradients;
 - coupling curvature feeds both paths where supported, although active hinges contribute starting-state curvature to the cache and worst-case cross-region curvature to the step bound.
 
@@ -59,7 +59,7 @@ Current tests cover two proof boundaries:
 ### 2.1 Four views
 - Physics (Energy Minimization): Relax toward lower energy under local and coupling terms.
 - Control theory: the geometry-matched Gershgorin cap gives a sufficient contraction condition in the stated quadratic/SPD regime. The Small-Gain allocator is a bounded curvature-spend heuristic, not a nonlinear certificate.
-- Statistics (Gaussian Graphical Models): a quadratic energy and a Gaussian model can define the same precision system \(Jx=h\). The coordinator has coupling factors and no Gaussian message objects.
+- Statistics (Gaussian Graphical Models): a quadratic energy and a Gaussian model can define the same precision system $Jx=h$. The coordinator has coupling factors and no Gaussian message objects.
 - Information theory: interpreting precision as confidence or inverse variance can guide experiments. The current implementation does not estimate channel capacity or prove SNR adaptation.
 
 ### 2.2 Precision‑Scaled Orthogonal Noise (PSON)
@@ -76,15 +76,15 @@ $$
 
 (Eq. 1)
 
-Here \(g=\nabla F(x)\), \(z\) is a Gaussian draw, and \(W\) is the configured inverse-precision weight operator. The final vector is normalized to the requested noise magnitude. The implementation then applies the largest single scalar that keeps the whole perturbation inside the unit box. A uniform scalar preserves \(g^\top\delta=0\); independent coordinate clipping generally would not.
+Here $g=\nabla F(x)$, $z$ is a Gaussian draw, and $W$ is the configured inverse-precision weight operator. The final vector is normalized to the requested noise magnitude. The implementation then applies the largest single scalar that keeps the whole perturbation inside the unit box. A uniform scalar preserves $g^\top\delta=0$; independent coordinate clipping generally would not.
 
 PSON explores directions tangent to the current energy level set to first order. This property does not imply a Hessian null space or zero second-order curvature. In the synthetic ablation in Section 7, precision scaling reduced the exact initial box-feasible full-Hessian quadratic cost relative to isotropic and unscaled orthogonal noise.
 
-When a symmetric positive definite problem metric \(M\) is available, the metric gradient is \(g_M=M^{-1}g\). The metric projection is \(M\)-orthogonal to \(g_M\), which is equivalent to \(g^\top\delta=0\). A dense metric uses a linear solve with \(M\); matrix-free callers can provide the action of \(M^{-1}\) through `metric_solve`. After precision weighting, the implementation re-projects with the same geometry.
+When a symmetric positive definite problem metric $M$ is available, the metric gradient is $g_M=M^{-1}g$. The metric projection is $M$-orthogonal to $g_M$, which is equivalent to $g^\top\delta=0$. A dense metric uses a linear solve with $M$; matrix-free callers can provide the action of $M^{-1}$ through `metric_solve`. After precision weighting, the implementation re-projects with the same geometry.
 
 Proposition (Quadratic PSON first-order property). Let $F(x) = \tfrac12 (x-x^\star)^\top H (x-x^\star)$ with $H \succeq 0$ and ordinary gradient $g = \nabla F(x) = H(x-x^\star)$. In Euclidean mode, project the noise orthogonal to $g$. In metric mode with SPD metric $M$, project along $g_M=M^{-1}g$ using $\delta=z-\frac{g^\top z}{g^\top M^{-1}g}M^{-1}g$. Apply any precision scaling before a final projection with the selected geometry. Then the final vector satisfies $g^\top \delta = 0$, and
 $\Delta F \;=\; F(x+\beta\delta) - F(x) \;=\; \tfrac12 \beta^2 \delta^\top H \delta \;\ge\; 0.$
-Thus, a pure noise move is generally second-order uphill in positive-curvature directions. The implementation preserves accepted-step monotonicity through the down-only acceptance rule. Precision scaling reduces the measured curvature cost in the synthetic ablation by biasing \(\delta\) before the final orthogonality projection. When \(\lVert g\rVert<10^{-8}\), the projection helper returns the noise unchanged because the gradient does not define a reliable normal. This branch is stationary-point exploration; first-order tangency is numerically vacuous there.
+Thus, a pure noise move is generally second-order uphill in positive-curvature directions. The implementation preserves accepted-step monotonicity through the down-only acceptance rule. Precision scaling reduces the measured curvature cost in the synthetic ablation by biasing $\delta$ before the final orthogonality projection. When $\lVert g\rVert<10^{-8}$, the projection helper returns the noise unchanged because the gradient does not define a reliable normal. This branch is stationary-point exploration; first-order tangency is numerically vacuous there.
 
 ### 2.3 Counterfactual gate-benefit coupling (CGBC)
 Counterfactual gate-benefit coupling (CGBC), nicknamed a wormhole coupling in the implementation, lets closed gates receive forces proportional to a caller-supplied estimate of downstream benefit. Before solver dispatch, the coordinator converts the supplied delta to a finite float inside a read-only top-level constraint snapshot. The value remains fixed for the complete solver call, and the original caller mapping is restored afterward. With gate-benefit energy
@@ -106,9 +106,9 @@ This provides a non-local gate force akin to the “nudge” in Equilibrium Prop
 Explicit sign check. From (Eq. 3), $\mathrm{sign}\big(\partial F/\partial \eta_{\text{gate}}\big) = -\,\mathrm{sign}(\Delta_{\text{benefit}})$. Thus when downstream benefit is positive, the gradient pushes the gate upward (reducing energy), irrespective of the current $\eta_{\text{gate}}$; conversely for negative benefit.
 
 ### 2.4 Stability and the Gaussian linear-system link
-The guard distinguishes the raw Hessian from the update geometry. Ordinary box-projected gradient descent is controlled by \(H\). A diagonal-preconditioned step is controlled by \(A=P^{-1/2}HP^{-1/2}\), using the same positive diagonal \(P\) that divides the gradient. For an SPD quadratic, a valid bound \(L_P\ge\lambda_{\max}(A)\) and \(0<\alpha<2/L_P\) make the box-projected map contractive in the \(P\)-norm.
+The guard distinguishes the raw Hessian from the update geometry. Ordinary box-projected gradient descent is controlled by $H$. A diagonal-preconditioned step is controlled by $A=P^{-1/2}HP^{-1/2}$, using the same positive diagonal $P$ that divides the gradient. For an SPD quadratic, a valid bound $L_P\ge\lambda_{\max}(A)$ and $0<\alpha<2/L_P$ make the box-projected map contractive in the $P$-norm.
 
-For a quadratic objective with SPD precision \(J\), minimizing \(F(x)=\tfrac{1}{2}x^\top Jx-h^\top x\) is equivalent to solving \(Jx=h\). With \(P=D=\operatorname{diag}(J)\), the implemented update \(x\leftarrow x-\alpha D^{-1}(Jx-h)\) is weighted Jacobi; \(\alpha=1\) gives classical Jacobi. Gaussian belief propagation is another distributed method for Gaussian inference and can recover the same mean when its message updates converge, subject to its own conditions. General GaBP also updates message precisions, so its transient iterations are not identified with the coordinator's weighted-Jacobi trajectory.
+For a quadratic objective with SPD precision $J$, minimizing $F(x)=\tfrac{1}{2}x^\top Jx-h^\top x$ is equivalent to solving $Jx=h$. With $P=D=\operatorname{diag}(J)$, the implemented update $x\leftarrow x-\alpha D^{-1}(Jx-h)$ is weighted Jacobi; $\alpha=1$ gives classical Jacobi. Gaussian belief propagation is another distributed method for Gaussian inference and can recover the same mean when its message updates converge, subject to its own conditions. General GaBP also updates message precisions, so its transient iterations are not identified with the coordinator's weighted-Jacobi trajectory.
 
 ---
 
@@ -125,20 +125,20 @@ with SPD precision matrix $J$.
 
 We denote $D = \mathrm{diag}(J)$ and write $J = D + L + U$ with $L$ strictly lower and $U$ strictly upper triangular. Classical linear iterations give:
 
-- The update $x^{t+1}=x^t-\alpha D^{-1}(Jx^t-h)$ is weighted Jacobi. It is classical Jacobi when $\alpha=1$, \(P=D\), the epsilon floor is inactive, and box clipping does not alter the proposal.
+- The update $x^{t+1}=x^t-\alpha D^{-1}(Jx^t-h)$ is weighted Jacobi. It is classical Jacobi when $\alpha=1$, $P=D$, the epsilon floor is inactive, and box clipping does not alter the proposal.
 - A triangular solve with $(D+L)^{-1}$ gives the Gauss-Seidel trajectory; that scheduler is not implemented here.
 - GaBP uses edge messages with evolving cavity precisions. When it converges on the corresponding Gaussian model, its mean solves $Jx=h$, but its intermediate updates need not match Jacobi or Gauss-Seidel.
 
 The shared linear system provides the connection between the methods. It does not make the algorithms stepwise identical. Weighted-Jacobi convergence requires $\rho(I-\alpha D^{-1}J)<1$. Walk-summability provides a separate sufficient convergence condition for Gaussian BP and is related to diagonal-dominance classes.
 
-Scope and realization. The current implementation realizes synchronous projected weighted Jacobi through per-coordinate stiffness updates in the stated quadratic case. It divides the gradient by a positive diagonal \(P\) aggregated from module and coupling curvature and floored by the active epsilon. It has no Gaussian message objects, cavity-precision updates, or dedicated sequential Gauss-Seidel scheduler.
+Scope and realization. The current implementation realizes synchronous projected weighted Jacobi through per-coordinate stiffness updates in the stated quadratic case. It divides the gradient by a positive diagonal $P$ aggregated from module and coupling curvature and floored by the active epsilon. It has no Gaussian message objects, cavity-precision updates, or dedicated sequential Gauss-Seidel scheduler.
 
 ---
 
 ## 4. Architecture & Mechanisms
 
 ### 4.1 Modules, Energies, and Precision
-Modules expose order parameters and implement local energies. Couplings encode interactions (springs, hinges, and CGBC/wormhole terms). A `SupportsPrecision` interface elevates curvature to a first-class signal. The coordinator aggregates a nonnegative diagonal cache \(\Lambda\) from module and coupling curvature. For either preconditioned update mode it constructs
+Modules expose order parameters and implement local energies. Couplings encode interactions (springs, hinges, and CGBC/wormhole terms). A `SupportsPrecision` interface elevates curvature to a first-class signal. The coordinator aggregates a nonnegative diagonal cache $\Lambda$ from module and coupling curvature. For either preconditioned update mode it constructs
 
 $$
 P_{ii}=\max(\varepsilon,\Lambda_{ii}),
@@ -146,10 +146,10 @@ P_{ii}=\max(\varepsilon,\Lambda_{ii}),
 \Delta\eta_i=-\alpha\frac{\partial F/\partial\eta_i}{P_{ii}}.
 $$
 
-The update and normalized stability bound consume this exact \(P\). PSON uses the curvature cache to bias exploration, then re-projects to restore first-order tangency. Vectorized graph caches avoid Python overhead.
+The update and normalized stability bound consume this exact $P$. PSON uses the curvature cache to bias exploration, then re-projects to restore first-order tangency. Vectorized graph caches avoid Python overhead.
 
 ### 4.2 Stability Guard and Small-Gain Allocator
-The implementation uses Gershgorin row sums in the geometry of the executed update. Let \(\bar h_{ii}\) and \(\bar h_{ij}\) bound the absolute diagonal and off-diagonal Hessian entries. The raw bound is
+The implementation uses Gershgorin row sums in the geometry of the executed update. Let $\bar h_{ii}$ and $\bar h_{ij}$ bound the absolute diagonal and off-diagonal Hessian entries. The raw bound is
 
 $$
 \lambda_{\max}(H)\le
@@ -158,7 +158,7 @@ $$
 
 (Eq. 5)
 
-For diagonal preconditioning, define \(A=P^{-1/2}HP^{-1/2}\). The implemented normalized bound is
+For diagonal preconditioning, define $A=P^{-1/2}HP^{-1/2}$. The implemented normalized bound is
 
 $$
 \lambda_{\max}(A)\le
@@ -170,7 +170,7 @@ $$
 
 (Eq. 6)
 
-The guard selects \(L_{\mathrm{update}}=L_P\) for a preconditioned step and \(L_{\mathrm{update}}=L_H\) otherwise, then uses
+The guard selects $L_{\mathrm{update}}=L_P$ for a preconditioned step and $L_{\mathrm{update}}=L_H$ otherwise, then uses
 
 $$
 \alpha_{\mathrm{used}}
@@ -180,15 +180,15 @@ $$
 
 (Eq. 7)
 
-Gradient realization. Components may supply analytic derivatives. Otherwise, the coordinator finite-differences every coordinate of the full objective; it does not prune isolated nodes merely because other nodes are coupled. The shared fallback uses a centered second-order stencil in the interior and a three-point second-order one-sided stencil at either box boundary, with all probes inside \([0,1]\). These stencils recover the derivative of a quadratic exactly up to floating-point error, so the quadratic map below is also realized by the finite-difference path in that numerical sense. For a general nonlinear energy, the fallback is an approximation and the theorem does not extend beyond its stated quadratic assumptions.
+Gradient realization. Components may supply analytic derivatives. Otherwise, the coordinator finite-differences every coordinate of the full objective; it does not prune isolated nodes merely because other nodes are coupled. The shared fallback uses a centered second-order stencil in the interior and a three-point second-order one-sided stencil at either box boundary, with all probes inside $[0,1]$. These stencils recover the derivative of a quadratic exactly up to floating-point error, so the quadratic map below is also realized by the finite-difference path in that numerical sense. For a general nonlinear energy, the fallback is an approximation and the theorem does not extend beyond its stated quadratic assumptions.
 
-Theorem (box-projected preconditioned quadratic contraction). Let \(F(x)=\tfrac12x^\top Hx-h^\top x\), \(H\succ0\), \(C=[0,1]^n\), and \(P\succ0\) diagonal. Let \(x_C^\star\) be the unique constrained minimizer and
+Theorem (box-projected preconditioned quadratic contraction). Let $F(x)=\tfrac12x^\top Hx-h^\top x$, $H\succ0$, $C=[0,1]^n$, and $P\succ0$ diagonal. Let $x_C^\star$ be the unique constrained minimizer and
 
 $$
 T_P(x)=\Pi_C^P\left(x-\alpha P^{-1}\nabla F(x)\right).
 $$
 
-For diagonal \(P\), projection onto the axis-aligned box is coordinate clipping in both the Euclidean and \(P\) metrics. If \(L_P\ge\lambda_{\max}(P^{-1/2}HP^{-1/2})\) and \(0<\alpha<2/L_P\), then
+For diagonal $P$, projection onto the axis-aligned box is coordinate clipping in both the Euclidean and $P$ metrics. If $L_P\ge\lambda_{\max}(P^{-1/2}HP^{-1/2})$ and $0<\alpha<2/L_P$, then
 
 $$
 \lVert T_P(x)-x_C^\star\rVert_P
@@ -199,9 +199,9 @@ $$
 
 (Eq. 8)
 
-The constrained minimizer is a fixed point of \(T_P\). The \(P\)-metric projection is nonexpansive, and the transformed affine error map is \(I-\alpha A\), which proves the inequality. With \(P=I\), the same argument gives the separate ordinary projected-gradient theorem in the Euclidean norm with \(A=H\) and \(L_H\).
+The constrained minimizer is a fixed point of $T_P$. The $P$-metric projection is nonexpansive, and the transformed affine error map is $I-\alpha A$, which proves the inequality. With $P=I$, the same argument gives the separate ordinary projected-gradient theorem in the Euclidean norm with $A=H$ and $L_H$.
 
-Built-in directed and asymmetric hinges contribute their worst-case curvature across active and inactive regions, so the bound covers an active-set crossing. For nonlinear modules, state-dependent curvature, and custom coupling bounds, the fixed-step theorem requires a report that remains valid over the segment from the accepted state to the projected proposal. When that contract is unavailable, projected Armijo checks the realized displacement \(s=\Pi_C(x-\alpha d)-x\) using
+Built-in directed and asymmetric hinges contribute their worst-case curvature across active and inactive regions, so the bound covers an active-set crossing. For nonlinear modules, state-dependent curvature, and custom coupling bounds, the fixed-step theorem requires a report that remains valid over the segment from the accepted state to the projected proposal. When that contract is unavailable, projected Armijo checks the realized displacement $s=\Pi_C(x-\alpha d)-x$ using
 
 $$
 g^\top s\le0,
@@ -211,12 +211,12 @@ $$
 
 If every backtracking trial fails, the state remains unchanged. The final monotonicity guard restores any other uphill proposal.
 
-Telemetry calls \((2/L_{\mathrm{update}})-\alpha_{\mathrm{used}}\) the step-cap slack. This value is not the contraction factor \(q_P\). Earlier configuration and log names containing `contraction_margin` remain deprecated aliases. `inspect_state()` reports raw `lipschitz_bound`, geometry-matched `update_lipschitz_bound`, cached `precision_diagonal`, and the exact `preconditioner_diagonal`.
+Telemetry calls $(2/L_{\mathrm{update}})-\alpha_{\mathrm{used}}$ the step-cap slack. This value is not the contraction factor $q_P$. Earlier configuration and log names containing `contraction_margin` remain deprecated aliases. `inspect_state()` reports raw `lipschitz_bound`, geometry-matched `update_lipschitz_bound`, cached `precision_diagonal`, and the exact `preconditioner_diagonal`.
 
 The optional Small-Gain adapter treats the remaining estimated row-sum margin as a budget for bounded coupling-weight increases. It supplies a global curvature-spend policy and telemetry; it is not a nonlinear small-gain certificate.
 
 ### 4.3 Counterfactual gate-benefit couplings (CGBCs)
-`GateBenefitCoupling` implements CGBC, with “wormhole coupling” retained as the implementation nickname. It applies a non-local gradient even for a closed connection when the caller supplies a downstream benefit value. The value remains frozen for the complete solver call. The plain coupling and `DampedGateBenefitCoupling` at power \(p=1\) are linear and contribute zero Hessian curvature. For damped power \(p\ge2\), writing the gate energy as \(-a\eta^p\), the implementation reports the exact box-wide absolute diagonal bound \(|a|p(p-1)\). This magnitude bound does not imply positive curvature: the term is concave when \(a>0\), and the quadratic contraction theorem still requires the total Hessian to be SPD. For nonzero \(a\) and \(1<p<2\), no finite closed-box gradient-Lipschitz bound exists at zero; a fixed-step guarded run fails closed unless projected Armijo is enabled. When the frozen coefficient is zero, the term and its curvature report are zero. Powers below one are rejected. The mechanism consumes the supplied credit signal and does not derive it. In the current repository CGBC is tested on synthetic gating cases; broader planning and sequence uses remain hypotheses to test with task-level ablations.
+`GateBenefitCoupling` implements CGBC, with “wormhole coupling” retained as the implementation nickname. It applies a non-local gradient even for a closed connection when the caller supplies a downstream benefit value. The value remains frozen for the complete solver call. The plain coupling and `DampedGateBenefitCoupling` at power $p=1$ are linear and contribute zero Hessian curvature. For damped power $p\ge2$, writing the gate energy as $-a\eta^p$, the implementation reports the exact box-wide absolute diagonal bound $|a|p(p-1)$. This magnitude bound does not imply positive curvature: the term is concave when $a>0$, and the quadratic contraction theorem still requires the total Hessian to be SPD. For nonzero $a$ and $1<p<2$, no finite closed-box gradient-Lipschitz bound exists at zero; a fixed-step guarded run fails closed unless projected Armijo is enabled. When the frozen coefficient is zero, the term and its curvature report are zero. Powers below one are rejected. The mechanism consumes the supplied credit signal and does not derive it. In the current repository CGBC is tested on synthetic gating cases; broader planning and sequence uses remain hypotheses to test with task-level ablations.
 
 ### 4.4 Precision‑Scaled Orthogonal Noise (PSON)
 First-order tangent exploration with a monotone acceptance guard. Precision-aware scaling biases perturbations before a final orthogonality projection. The final box-feasibility operation scales the complete vector uniformly. The current evidence supports lower exact full-Hessian curvature cost for precision-orthogonal noise in the synthetic ablation; the diagonal curvature proxy is reported separately. Escape behavior and task-level effects remain empirical claims to test on broader tasks.
@@ -295,7 +295,7 @@ The implementation includes relaxation trackers and stability telemetry: per-ste
 
 Command: `uv run python -m experiments.ablate_pson_noise --trials 30 --steps 80 --noise-cost-samples 32 --bootstrap-samples 10000`
 
-Protocol: each family uses 30 generated seeds and 80 attempted relaxation steps. The three noise modes receive the same problem instance and raw Gaussian draws. Rejected proposals restore the previous state, and the remaining schedule continues. For each mode and seed, the noise builder first returns a requested-magnitude vector \(q\). The experiment applies the same largest uniform box-feasible scale used by the coordinator at the initial state, giving the realized displacement \(\delta=sq\). The primary cost is the mean exact synthetic full-Hessian value \(\delta^\top H\delta\) over 32 draws. The raw CSV separately retains requested-vector costs, realized costs, box-scale statistics, and the diagonal curvature proxies. The effect is the paired percentage reduction in realized precision-orthogonal full-Hessian cost relative to each baseline. Intervals are percentile 95% confidence intervals from 10,000 paired hierarchical bootstrap resamples over problem seeds and draw indices.
+Protocol: each family uses 30 generated seeds and 80 attempted relaxation steps. The three noise modes receive the same problem instance and raw Gaussian draws. Rejected proposals restore the previous state, and the remaining schedule continues. For each mode and seed, the noise builder first returns a requested-magnitude vector $q$. The experiment applies the same largest uniform box-feasible scale used by the coordinator at the initial state, giving the realized displacement $\delta=sq$. The primary cost is the mean exact synthetic full-Hessian value $\delta^\top H\delta$ over 32 draws. The raw CSV separately retains requested-vector costs, realized costs, box-scale statistics, and the diagonal curvature proxies. The effect is the paired percentage reduction in realized precision-orthogonal full-Hessian cost relative to each baseline. Intervals are percentile 95% confidence intervals from 10,000 paired hierarchical bootstrap resamples over problem seeds and draw indices.
 
 | Scenario | Structure | Size | Reduction vs isotropic | Reduction vs orthogonal |
 |---|---|---:|---:|---:|
@@ -390,9 +390,9 @@ Note: To enable stiffness‑based per‑coordinate updates in your own scripts, 
 
 ## 9. Limitations
 
-- The implemented stiffness path is weighted Jacobi for the stated quadratic/SPD system when \(P=\operatorname{diag}(H)\); classical Jacobi additionally requires \(\alpha=1\), an inactive epsilon floor, and no box-clipping change. Gaussian BP is related literature context, not an implemented solver path.
+- The implemented stiffness path is weighted Jacobi for the stated quadratic/SPD system when $P=\operatorname{diag}(H)$; classical Jacobi additionally requires $\alpha=1$, an inactive epsilon floor, and no box-clipping change. Gaussian BP is related literature context, not an implemented solver path.
 - Curvature underreporting or a start-point-only bound that fails along the proposal segment invalidates the fixed-step contraction premise. Projected Armijo can test shorter realized displacements. Monotone restoration prevents an uphill proposal from replacing accepted state, but it cannot recover a missing bound or guarantee progress.
-- Update preconditioning uses a positive diagonal approximation. The theorem controls the full Hessian through the normalized matrix \(P^{-1/2}HP^{-1/2}\); it does not assume that \(P\) diagonalizes \(H\).
+- Update preconditioning uses a positive diagonal approximation. The theorem controls the full Hessian through the normalized matrix $P^{-1/2}HP^{-1/2}$; it does not assume that $P$ diagonalizes $H$.
 - The controlled escape construction is designed to test anisotropic precision allocation and is not representative of arbitrary nonconvex landscapes.
 - The curvature audit samples states and can detect observed underreporting; it cannot certify unsampled states.
 - CGBC consumes a caller-supplied benefit value that is converted to a finite float and remains frozen for the complete solver call. Damped powers strictly between one and two require the projected-Armijo handling stated in Section 4.3. Benefit-estimation quality affects activation dynamics; broader planning and sequence claims require task-level tests beyond the synthetic gating tests.
@@ -412,7 +412,7 @@ Walk-summability and diagonal dominance. Following Malioutov et al., walk-summab
 
 ## 11. Conclusion
 
-The main result is a composable energy-relaxation contract whose guard matches the executed geometry. On an SPD quadratic, the diagonal-preconditioned box-projected map contracts in the \(P\)-norm when the normalized Gershgorin bound covers \(P^{-1/2}HP^{-1/2}\). This is a stronger and more specific result than applying an unpreconditioned \(2/L\) cap to a preconditioned direction. Built-in hinge bounds cover active-set crossing. Nonlinear and custom terms require segment-valid reports or projected Armijo. The framework depends on accurate curvature contracts, exact agreement between the bounded and executed preconditioner, and evidence that remains separate from the formal result.
+The main result is a composable energy-relaxation contract whose guard matches the executed geometry. On an SPD quadratic, the diagonal-preconditioned box-projected map contracts in the $P$-norm when the normalized Gershgorin bound covers $P^{-1/2}HP^{-1/2}$. This is a stronger and more specific result than applying an unpreconditioned $2/L$ cap to a preconditioned direction. Built-in hinge bounds cover active-set crossing. Nonlinear and custom terms require segment-valid reports or projected Armijo. The framework depends on accurate curvature contracts, exact agreement between the bounded and executed preconditioner, and evidence that remains separate from the formal result.
 
 ---
 
